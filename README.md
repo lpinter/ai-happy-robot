@@ -152,7 +152,7 @@ Each sketch tests **one** part on its own, so you know it's wired right before y
 **How to upload (Arduino IDE)**
 1. Install the **esp32** boards package by Espressif (version 3.x) from the Boards Manager. No other libraries are needed.
 2. Board: **ESP32S3 Dev Module**. Flash size: **16MB**. PSRAM: **OPI PSRAM** (the camera needs it).
-3. Plug the USB-C into the board's **UART/COM** port, pick that port, then Upload.
+3. Plug the USB-C into the board's **TTL** port, pick that port, then Upload.
 4. Open the Serial Monitor at **115200** baud.
 
 `examples/personality.md` shows how the robot's character is written: one short text file that the AI model reads before every reply.
