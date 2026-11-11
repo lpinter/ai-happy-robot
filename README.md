@@ -46,15 +46,20 @@ All of these are small, cheap and easy to find. Use what you have; similar parts
 ### Pin map
 
 **Face: 1.5" SPI OLED**
-| OLED pin | ESP32-S3 |
-|---|---|
-| VCC | 3V3 |
-| GND | GND |
-| SCL / SCK | GPIO 21 |
-| SDA / MOSI | GPIO 47 |
-| DC | GPIO 2 |
-| CS | GPIO 14 |
-| RES / RST | EN (resets with the board) |
+| OLED pin | ESP32-S3 | Other OLED board pins names |
+|----------|----------|-------------|
+| VCC      | 3V3      | VCC |
+| GND      | GND      | GND |
+| DIN      | GPIO 47  | SDA / MOSI |
+| CLK      | GPIO 21  | SCL / SCK |
+| CS       | GPIO 14  | CS |
+| DC       | GPIO 2   | DC |
+| RST      | EN       | RES / RST (resets with the board) |
+
+## Notes
+
+- **RST to EN:** the display resets whenever the board resets. If the display stays blank after power-up, move RST to a free GPIO (for example GPIO 1) and give that pin to the display library as the reset pin.
+- **VCC:** use 3V3 unless the display's listing says it accepts 5V.
 
 **Ears: INMP441 mic**
 | Mic pin | ESP32-S3 |
