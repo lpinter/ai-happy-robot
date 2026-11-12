@@ -54,7 +54,7 @@ All of these are small, cheap and easy to find. Use what you have; similar parts
 | GPIO 21  | CLK      | SCL / SCK |
 | GPIO 14  | CS       | CS |
 | GPIO 2   | DC       | DC |
-| EN       | RST      | RES / RST (resets with the board) |
+| EN       | RST      | RES / RST|
 
 ## Notes
 
