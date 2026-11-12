@@ -26,19 +26,24 @@ In my build, everything runs **locally**: Whisper for speech-to-text, Google's *
 
 All of these are small, cheap and easy to find. Use what you have; similar parts work too.
 
+All of these parts come in pairs, so you can build one circuit on the breadboard, and based on the working prototype build one on a permanent board, so you can proudly show it to your non-technical friends and relatives.
+
 | Job | Part | Notes | Source |
-|---|---|---|
-| Brain on the bot | **ESP32-S3 dev board, N16R8** (with a camera connector) | 16 MB flash, 8 MB PSRAM. Get a **pre-soldered** one if you can | 
-[Gikfun 4Ohm 40mm Diameter 3W Full Range Audio Speaker Stereo Woofer Loudspeaker for Arduino (Pack of 2pcs) EK1794](https://www.amazon.com/dp/B01LN8ONG4?ref=ppx_yo2ov_dt_b_fed_asin_title) |
-| Eyes | **OV5640** or **OV2640** camera | Plugs into the board's camera socket |
-| Ears | **INMP441** I2S microphone | |
-| Mouth | **MAX98357A** I2S amplifier + a small speaker (4–8 Ω, ~3 W) | The speaker connects through the amp's screw terminal |
-| Face | **1.5" 128×128 SPI colour OLED** (SSD1351 driver) | 7 pins |
-| Neck | **Micro servo** (SG90 / MG90S) | Turns the face left and right |
-| Touch | A small square of **copper sheet** (~2 × 2 cm) + one wire | The head-pat sensor |
-| Power | **3.7 V LiPo** (e.g. 2000 mAh) + **J5019** charger/boost board set to 5 V | Lets Scrappy leave the desk |
-| Building | Breadboards (two full-size side by side, or four minis) + jumper wires | The ESP32 is too wide for one breadboard |
-| Thinking | A computer on the same Wi-Fi | A gaming PC with an RTX 3060-class GPU is enough, or use a smaller model |
+|---|---|---|---|
+| Brain on the bot | **ESP32-S3 dev board, N16R8** (with a camera connector) | 16 MB flash, 8 MB PSRAM. Get a **pre-soldered** one if you can | [ESP32-S3-CAM Development Board with OV5640 Camera +Antenna, 16MB Flash 8MB PSRAM ESP32-S3 N16R8 Module with Dual USB-C WiFi BT MCU Microcontroller for IoT, MicroPython,DIY Projects and AI Project](https://www.amazon.com/dp/B0H86XY7GB?ref=ppx_yo2ov_dt_b_fed_asin_title) |
+| Eyes | **OV5640** or **OV2640** camera | Plugs into the board's camera socket | The ESP32 board above already has the 5-megapixel OV5640 camera installed |
+| Ears | **INMP441** I2S microphone | | [2Pcs INMP441 Omnidirectional MEMS Microphone Module I2S Digital Output High Precision Low Power Compatible with Arduino ESP32](https://www.amazon.com/dp/B0H6S3RJZ9?ref=ppx_yo2ov_dt_b_fed_asin_title) |
+| Amplifier | **MAX98357A** I2S amplifier| Audio amplifier to drive the speaker | [2PCS MAX98357 MAX98357A I2S 3W Class D Amplifier Breakout Interface I2S DAC Decoder for Audio Raspberry Pi Esp32 Arduino Zero](https://www.amazon.com/dp/B0DPJRLMDJ?ref=ppx_yo2ov_dt_b_fed_asin_title) | 
+| Mouth | Small speaker (4–8 Ω, ~3 W) | The speaker connects through the amp's screw terminal |  [Gikfun 4Ohm 40mm Diameter 3W Full Range Audio Speaker Stereo Woofer Loudspeaker for Arduino (Pack of 2pcs) EK1794](https://www.amazon.com/dp/B01LN8ONG4?ref=ppx_yo2ov_dt_b_fed_asin_title) |
+| Face | **1.5" 128×128 SPI colour OLED** (SSD1351 driver) | 7 pins | [1.5inch RGB OLED Module, 128x128 SPI Display for Raspberry Pi](https://www.amazon.com/dp/B07D9NVJPZ?ref=ppx_yo2ov_dt_b_fed_asin_title) |
+| Neck | **Micro servo** (SG90 / MG90S) | Turns the face left and right | [MG90S 9G Micro Servo Motor Metal Gear for RC Plane Robot Arduino (2)](https://www.amazon.com/dp/B0BWJ4RKGV?ref=ppx_yo2ov_dt_b_fed_asin_title&th=1) |
+| Touch | A small square of **copper sheet** (~2 × 2 cm) + one wire | The head-pat sensor | |
+| Battery | **3.7 V LiPo** (e.g. 2000 mAh) | Lets Scrappy leave the desk | [EEMB 3.7V 103454 2000mAh Lipo Battery Rechargeable JST 2.0mm 1-Pack](https://www.amazon.com/dp/B08214DJLJ?ref=ppx_yo2ov_dt_b_fed_asin_title&th=1) |
+| Charger | **J5019** or similar charger/boost board set to 5 V | Charges the li-po battery and upconverts the battery voltage to steady 5V | [Type-C USB 5V 2A Step-Up Power Boost Converter Module Lithium Battery Charging Protection Board Module 4.2V/4.35V 10pcs](https://www.amazon.com/dp/B0GCWKHQH3?ref=ppx_yo2ov_dt_b_fed_asin_title) |  
+| Battery wires | | Connect the battery to the charged/booster board | [10pcs Upgraded Tiny Whoop JST-PH 2.0 Male and Female Connector Cable for Battery JJRC H36 H67 Blade Inductrix E010 E013](https://www.amazon.com/dp/B07NWD5NTN?ref=ppx_yo2ov_dt_b_fed_asin_title) |
+| Building | Breadboards (two full-size side by side, or four minis) + jumper wires | The ESP32 is too wide for one breadboard | [WWZMDiB 6 Pcs Mini Small Breadboard kit White 170 Tie Points (Includes 10-pin Male/Female + 10-pin Male/Female Jumper Wires)](https://www.amazon.com/dp/B09YXQJMTG?ref=ppx_yo2ov_dt_b_fed_asin_title) |
+| Wires | | Additional breadboard wires | [ELEGOO 120pcs Multicolored Dupont Wire M-F, M-M, F-F for Breadboard Jumper](https://www.amazon.com/dp/B01EV70C78?ref=ppx_yo2ov_dt_b_fed_asin_title&th=1) |
+| Thinking | A computer on the same Wi-Fi | A gaming PC with an RTX 3060-class GPU is enough, or use a smaller model | |
 
 ---
 
@@ -47,9 +52,11 @@ All of these are small, cheap and easy to find. Use what you have; similar parts
 ### Pin map
 
 **Face: 1.5" SPI OLED**
-| ESP32-S3 | OLED (my board) | OLED (original board) |
+
+The first column is the pin list of the ESP32 board. The second column has the pins of the display I purchased. The third column shows the pins of the display from the original article. 
+| ESP32-S3 | OLED (my display) | OLED (original display) |
 |----------|----------|-------------|
-| 3V3      | VCC      | VCC |
+| 3V3      | VCC      | VCC o
 | GND      | GND      | GND |
 | GPIO 47  | DIN      | SDA / MOSI |
 | GPIO 21  | CLK      | SCL / SCK |
