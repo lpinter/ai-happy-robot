@@ -1,6 +1,10 @@
 # Happy: an AI desk robot from a junk drawer
 
-Scrappy is a small desk companion. It can **hear** you, **talk** back, **see** through a camera, show a **face** on a tiny screen, **turn its head**, and it knows when you **pat** it. It's built only from parts that were already in my junk drawer, on breadboards and jumper wires, with nothing new bought.
+Happy is a small desk companion. It can **hear** you, **talk** back, **see** through a camera, show a **face** on a tiny screen, **turn its head**, and it knows when you **pat** it. It was first built by Anant with instructions from Claude AI and introduced in the [I Gave Claude My Junk Drawer. It Built Me a Robot... (Code Included)](https://www.youtube.com/watch?v=HRDlMXU2BnY) YouTube video. He built it  only from parts that were already in his junk drawer, on breadboards and jumper wires, with nothing new bought.
+
+His original instructions in his YouTube video and in the GitHub repository did not contain all steps to build the robot, so I have forked his repository from [https://github.com/techwithanant/scrappy](https://github.com/techwithanant/scrappy) to add more technical information and code to build and configure the robot.
+
+My step-by-step instructions are in my blog at [Building Happy, the AI hardware robot](https://pinter.org/archives/17928).
 
 **Watch the build:** *(video link coming soon)*
 
