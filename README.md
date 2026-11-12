@@ -1,4 +1,4 @@
-# Scrappy: an AI desk robot from a junk drawer
+# Happy: an AI desk robot from a junk drawer
 
 Scrappy is a small desk companion. It can **hear** you, **talk** back, **see** through a camera, show a **face** on a tiny screen, **turn its head**, and it knows when you **pat** it. It's built only from parts that were already in my junk drawer, on breadboards and jumper wires, with nothing new bought.
 
