@@ -26,9 +26,10 @@ In my build, everything runs **locally**: Whisper for speech-to-text, Google's *
 
 All of these are small, cheap and easy to find. Use what you have; similar parts work too.
 
-| Job | Part | Notes |
+| Job | Part | Notes | Source |
 |---|---|---|
-| Brain on the bot | **ESP32-S3 dev board, N16R8** (with a camera connector) | 16 MB flash, 8 MB PSRAM. Get a **pre-soldered** one if you can |
+| Brain on the bot | **ESP32-S3 dev board, N16R8** (with a camera connector) | 16 MB flash, 8 MB PSRAM. Get a **pre-soldered** one if you can | 
+[Gikfun 4Ohm 40mm Diameter 3W Full Range Audio Speaker Stereo Woofer Loudspeaker for Arduino (Pack of 2pcs) EK1794](https://www.amazon.com/dp/B01LN8ONG4?ref=ppx_yo2ov_dt_b_fed_asin_title) |
 | Eyes | **OV5640** or **OV2640** camera | Plugs into the board's camera socket |
 | Ears | **INMP441** I2S microphone | |
 | Mouth | **MAX98357A** I2S amplifier + a small speaker (4–8 Ω, ~3 W) | The speaker connects through the amp's screw terminal |
