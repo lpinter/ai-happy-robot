@@ -46,15 +46,15 @@ All of these are small, cheap and easy to find. Use what you have; similar parts
 ### Pin map
 
 **Face: 1.5" SPI OLED**
-| OLED pin | ESP32-S3 | Other OLED board pins names |
+| ESP32-S3 | OLED (my board) | OLED (original board) |
 |----------|----------|-------------|
-| VCC      | 3V3      | VCC |
+| 3V3      | VCC      | VCC |
 | GND      | GND      | GND |
-| DIN      | GPIO 47  | SDA / MOSI |
-| CLK      | GPIO 21  | SCL / SCK |
-| CS       | GPIO 14  | CS |
-| DC       | GPIO 2   | DC |
-| RST      | EN       | RES / RST (resets with the board) |
+| GPIO 47  | DIN      | SDA / MOSI |
+| GPIO 21  | CLK      | SCL / SCK |
+| GPIO 14  | CS       | CS |
+| GPIO 2   | DC       | DC |
+| EN       | RST      | RES / RST (resets with the board) |
 
 ## Notes
 
