@@ -40,8 +40,8 @@ const int MAX_REPLY_SECONDS = 30;
 
 // Hands-free listening. Set SHOW_LEVELS = true to see the mic level and pick MIN_LEVEL.
 const bool  HANDS_FREE    = true;   // false = BOOT button only, like before
-const bool  SHOW_LEVELS   = true;  // print the mic level twice a second (for tuning)
-const int   MIN_LEVEL     = 1000;    // never start recording below this loudness...
+const bool  SHOW_LEVELS   = false;  // print the mic level twice a second (for tuning)
+const int   MIN_LEVEL     = 300;    // never start recording below this loudness...
 const float NOISE_FACTOR  = 3.0f;   // ...or below 3x the room's background noise
 const int   START_MS      = 80;     // this much loud sound in a row starts a recording
 const int   SILENCE_MS    = 800;    // this much quiet ends it

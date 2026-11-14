@@ -14,6 +14,11 @@ Endpoints:
   POST /say   {"text": "..."} -> WAV file                    (tests the voice; add "chat": true to
                                                               have Happy answer the text first)
   GET  /health
+  GET  /memory                                               (what Happy remembers long-term)
+
+Long-term memory: when Happy learns something worth keeping it adds [REMEMBER: ...] to its answer;
+the server strips the tag, appends the fact to memory.md, and puts memory.md into the system prompt
+on every request. Edit or delete lines in memory.md by hand any time.
 
 Audio in (/talk and /stt):
   * Content-Type: application/octet-stream -> raw PCM, 16 kHz, 16-bit LE, mono (ESP32)
@@ -58,6 +63,24 @@ args = None
 personality = ""
 history = []         # recent turns so Happy remembers the conversation
 history_lock = Lock()
+memory_lock = Lock()  # long-term memory file (memory.md)
+DEFAULT_MEMORY = Path(__file__).resolve().parent / "memory.md"
+
+MEMORY_RULES = """
+
+## Your long-term memory
+When the person teaches you something worth keeping for future conversations (a fact about them
+or their friends, a preference, a correction, a new word or how to pronounce it), add ONE line at
+the very end of your answer, exactly like this:
+[REMEMBER: short fact in third person]
+Only for things worth remembering for days, not small talk or things you already remember.
+The tag is removed before you speak, so never mention it.
+
+What you remember from earlier conversations:
+{memories}"""
+
+REMEMBER_TAG = re.compile(r"\[\s*REMEMBER\s*:\s*(.*?)\s*\]", re.I | re.S)
+UNCLOSED_TAG = re.compile(r"\[\s*REMEMBER\b.*$", re.I | re.S)   # cut off by max_tokens
 
 
 # ---------------------------------------------------------------- audio helpers
@@ -123,12 +146,55 @@ def heard_name(text: str) -> bool:
     return any(w in args.wake_words for w in re.findall(r"[a-z]+", text.lower()))
 
 
+# ---------------------------------------------------------------- long-term memory
+
+def read_memories() -> list:
+    """The "- fact" lines of memory.md. Read on every request, so hand edits apply at once."""
+    if not args.memory:
+        return []
+    try:
+        lines = Path(args.memory).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    return [l.strip()[2:].strip() for l in lines if l.strip().startswith("- ")]
+
+
+def remember(facts: list) -> list:
+    """Append new facts to memory.md (skips exact duplicates). Returns what was saved."""
+    if not args.memory:
+        return []
+    saved = []
+    with memory_lock:
+        known = {m.lower() for m in read_memories()}
+        path = Path(args.memory)
+        new_file = not path.exists()
+        with path.open("a", encoding="utf-8") as f:
+            if new_file:
+                f.write("# What Happy remembers\n\nOne fact per line, starting with \"- \". "
+                        "Edit or delete lines freely; Happy reads this file on every answer.\n\n")
+            for fact in facts:
+                fact = " ".join(fact.split())
+                if fact and fact.lower() not in known:
+                    f.write(f"- {fact}\n")
+                    known.add(fact.lower())
+                    saved.append(fact)
+    return saved
+
+
+def system_prompt() -> str:
+    if not args.memory:
+        return personality
+    memories = read_memories()
+    listed = "\n".join(f"- {m}" for m in memories) if memories else "(nothing yet)"
+    return personality + MEMORY_RULES.format(memories=listed)
+
+
 # ---------------------------------------------------------------- the brain (LM Studio)
 
 def ask_llm(text: str) -> dict:
     """Send what the person said to Gemma in LM Studio (OpenAI-compatible API)."""
     with history_lock:
-        messages = [{"role": "system", "content": personality}] + history + \
+        messages = [{"role": "system", "content": system_prompt()}] + history + \
                    [{"role": "user", "content": text}]
     payload = {
         "model": args.lm_model,
@@ -147,13 +213,21 @@ def ask_llm(text: str) -> dict:
     except urllib.error.URLError as e:
         return {"reply": "", "llm_error": f"LM Studio not reachable at {args.lm_url}: {e}. "
                                           "Is the server running? (lms server start)"}
-    reply = (data["choices"][0]["message"].get("content") or "").strip()
+    raw = (data["choices"][0]["message"].get("content") or "").strip()
+    facts = REMEMBER_TAG.findall(raw)
+    reply = UNCLOSED_TAG.sub("", REMEMBER_TAG.sub("", raw)).strip()   # never speak the tag
+    saved = remember(facts)
 
     with history_lock:
         history.extend([{"role": "user", "content": text},
                         {"role": "assistant", "content": reply}])
         del history[:-2 * args.history]   # keep the last N exchanges
-    return {"reply": reply, "seconds_llm": round(time.time() - t0, 2)}
+    result = {"reply": reply, "seconds_llm": round(time.time() - t0, 2)}
+    if saved:
+        result["remembered"] = saved
+        for fact in saved:
+            print(f"  memory : {fact}")
+    return result
 
 
 # ---------------------------------------------------------------- text-to-speech (Kokoro)
@@ -245,6 +319,8 @@ class Handler(BaseHTTPRequestHandler):
                                   "cuda": torch.cuda.is_available(),
                                   "llm": None if args.no_llm else args.lm_model,
                                   "voice": None if tts is None else args.voice})
+        elif self.path == "/memory":
+            self._send_json(200, {"file": args.memory or None, "memories": read_memories()})
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -323,6 +399,8 @@ def main():
                    help="model id from: curl.exe http://localhost:1234/v1/models")
     p.add_argument("--personality", default=str(DEFAULT_PERSONALITY))
     p.add_argument("--history", type=int, default=6, help="how many past exchanges Happy remembers")
+    p.add_argument("--memory", default=str(DEFAULT_MEMORY),
+                   help="long-term memory file ('' to disable)")
     p.add_argument("--no-llm", action="store_true", help="speech-to-text only, skip LM Studio")
     p.add_argument("--voice", default="af_heart",
                    help="Kokoro voice, e.g. af_heart, af_bella, am_michael, bm_george, am_puck")
@@ -354,6 +432,8 @@ def main():
 
     if not args.no_llm:
         print(f"LLM: {args.lm_model} at {args.lm_url}")
+        if args.memory:
+            print(f"Memory: {args.memory} ({len(read_memories())} facts)")
     try:
         server = Server((args.host, args.port), Handler)
     except OSError as e:

@@ -32,6 +32,7 @@ Run all commands in **PowerShell** (Start menu → "PowerShell"), not in the old
 | `brain/install_autostart.ps1` | Makes Windows run `start_happy.ps1` every time you log on |
 | `firmware/stt_client/stt_client.ino` | ESP32 sketch: push-to-talk, sends audio, plays the answer |
 | `../examples/personality.md` | Happy's character. Gemma reads it before every answer |
+| `brain/memory.md` | What Happy has learned from you. Gemma reads it before every answer, and Happy adds to it |
 
 ## What you need first
 
@@ -289,6 +290,18 @@ The name Happy answers to is set on the server: `py stt_server.py --wake-words h
 
 To hear exactly what the microphone picked up, play `last_recording.wav`. It's in the `brain`
 folder when you start the server by hand, and in `brain\logs` when it runs from autostart.
+
+### What Happy remembers
+
+Happy only keeps the last few exchanges in its head (`--history`, default 6), and it forgets them
+when the server restarts. Things worth keeping (your friends' names, a corrected pronunciation, a new
+word) go into `brain/memory.md`: Happy adds a hidden `[REMEMBER: ...]` note to its answer, the
+server removes it before speaking, saves the fact, and prints `memory : ...` in the log.
+
+- See the list: open `brain/memory.md`, or `curl.exe http://localhost:8000/memory`
+- Fix or forget something: edit or delete the line in `memory.md`. Changes apply on the next answer, no restart needed
+- Teach on purpose: "Happy, remember that Jane is our friend"
+- Turn it off: `py stt_server.py --memory ""`
 
 ## Step 10: Start everything automatically at logon
 
