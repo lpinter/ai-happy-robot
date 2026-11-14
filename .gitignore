@@ -1,0 +1,6 @@
+brain/logs/
+__pycache__/
+brain/last_recording.wav
+secrets.h
+photo*.jpg
+last_recording.wav

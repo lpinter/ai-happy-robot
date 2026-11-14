@@ -1,0 +1,11 @@
+﻿
+2026-11-13 00:58:19  Starting Happy brain
+2026-11-13 00:58:19  lms: Success! Server is now running on port 1234
+2026-11-13 00:58:19  LM Studio is up
+2026-11-13 00:58:20  Starting stt_server.py on port 8000 (Whisper 'small', language 'en')
+Personality: D:\_Laci\_Current\Projects\Git\AI\ai-happy-robot\examples\personality.md
+Loading Whisper 'small' on cuda ...
+Loading Kokoro voice 'af_heart' ...
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+LLM: google/gemma-4-26b-a4b-qat at http://localhost:1234/v1/chat/completions
+Listening on http://0.0.0.0:8000  (POST /talk /stt /chat /say, GET /health)

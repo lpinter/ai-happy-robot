@@ -1,0 +1,6 @@
+# Install the CUDA build of torch FIRST (see ../README.md, step 2), then:
+#   py -3.12 -m pip install -r requirements.txt
+openai-whisper   # speech-to-text
+kokoro           # text-to-speech (Happy's voice)
+soundfile
+numpy
