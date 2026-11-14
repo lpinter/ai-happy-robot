@@ -63,7 +63,7 @@ You can ignore any `Warning: You are sending unauthenticated requests to the HF 
 
 Run this from a folder where you can save files, e.g. `cd $env:TEMP`:
 ```powershell
-curl.exe -X POST http://localhost:8000/say -H "Content-Type: application/json" -d '{\"text\":\"Hello, I am Happy! Nice to meet you.\"}' -o say.wav
+'{"text":"Hello, I am Happy! Nice to meet you."}' | curl.exe -X POST http://localhost:8000/say -H "Content-Type: application/json" --data-binary "@-" -o say.wav
 start say.wav
 ```
 Expected: your PC plays Happy's voice. The server window shows `say    : Hello, I am Happy! ...`.
@@ -94,9 +94,9 @@ Add `--speed 1.1` to talk faster or `--speed 0.9` to talk slower.
 
 ## Step 5: Have Happy answer out loud on your PC
 
-Add `\"chat\": true` and Happy answers the text, through Gemma, instead of just reading it:
+Add `"chat": true` and Happy answers the text, through Gemma, instead of just reading it:
 ```powershell
-curl.exe -X POST http://localhost:8000/say -H "Content-Type: application/json" -d '{\"text\":\"What is your favorite color?\", \"chat\": true}' -o answer.wav
+'{"text":"What is your favorite color?", "chat": true}' | curl.exe -X POST http://localhost:8000/say -H "Content-Type: application/json" --data-binary "@-" -o answer.wav
 start answer.wav
 ```
 Expected: you hear something like "I really love the bright color of shiny copper…".
@@ -186,6 +186,7 @@ curl.exe http://localhost:8000/health
 
 | What you see | Likely cause and fix |
 |--------------|----------------------|
+| `curl: (6) Could not resolve host: I` (one error per word) | The JSON was passed with `-d`. Pipe it in instead, as in Step 3: `'{...}' \| curl.exe ... --data-binary "@-"` |
 | `ModuleNotFoundError: No module named 'kokoro'` | Step 1 |
 | `"voice": null` in `/health` | The server was started with `--no-tts` |
 | `/say` returns `text-to-speech is off` | Same as above |

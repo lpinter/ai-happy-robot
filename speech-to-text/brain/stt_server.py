@@ -7,6 +7,8 @@ Endpoints:
   POST /talk  audio in -> Happy's spoken answer out (what the ESP32 uses)
                 response body: raw PCM, 16 kHz, 16-bit LE, mono
                 headers: X-Happy-Text (what you said), X-Happy-Reply (the answer), both URL-encoded
+                request header X-Happy-Wake: 1 -> only answer if the text contains a wake word
+                (hands-free mode); otherwise the response is empty with X-Happy-Ignored: 1
   POST /stt   audio in -> JSON {"text": ..., "reply": ...}  (no speech, handy for debugging)
   POST /chat  {"text": "..."} -> JSON reply                  (tests LM Studio without a mic)
   POST /say   {"text": "..."} -> WAV file                    (tests the voice; add "chat": true to
@@ -25,6 +27,7 @@ Run:   py stt_server.py --model small --language en
 import argparse
 import io
 import json
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -113,6 +116,11 @@ def transcribe(audio: np.ndarray) -> dict:
         "seconds_audio": round(len(audio) / SAMPLE_RATE, 2),
         "seconds_stt": round(time.time() - t0, 2),
     }
+
+
+def heard_name(text: str) -> bool:
+    """True if Whisper's text contains one of the wake words (e.g. "Hey Happy, ...")."""
+    return any(w in args.wake_words for w in re.findall(r"[a-z]+", text.lower()))
 
 
 # ---------------------------------------------------------------- the brain (LM Studio)
@@ -209,8 +217,9 @@ class Handler(BaseHTTPRequestHandler):
             Path(args.save_dir, "last_recording.wav").write_bytes(to_wav(audio, SAMPLE_RATE))
         return audio
 
-    def _hear_and_answer(self, audio: np.ndarray) -> dict:
-        """Whisper + LM Studio. Prints the conversation to the console/log."""
+    def _hear_and_answer(self, audio: np.ndarray, need_name: bool = False) -> dict:
+        """Whisper + LM Studio. Prints the conversation to the console/log.
+        need_name: hands-free recording, only answer if the wake word was heard."""
         if len(audio) < SAMPLE_RATE // 4:
             return {"text": "", "reply": "", "note": "audio too short"}
         peak = float(np.max(np.abs(audio)))
@@ -219,6 +228,10 @@ class Handler(BaseHTTPRequestHandler):
         print(f"[{self.client_address[0]}] {result['seconds_audio']}s audio, peak {peak:.3f}, "
               f"stt {result['seconds_stt']}s")
         print(f"  you    : {result['text']}")
+        if need_name and result["text"] and not heard_name(result["text"]):
+            result["ignored"] = True
+            print("  (ignored: no wake word)")
+            return result
         if result["text"] and not args.no_llm:
             result.update(ask_llm(result["text"]))
             print(f"  happy  : {result.get('reply') or result.get('llm_error')}")
@@ -251,7 +264,8 @@ class Handler(BaseHTTPRequestHandler):
         audio = self._read_audio()
         if audio is None:
             return
-        result = self._hear_and_answer(audio)
+        need_name = self.headers.get("X-Happy-Wake") == "1" and bool(args.wake_words)
+        result = self._hear_and_answer(audio, need_name)
         reply = result.get("reply") or ""
         if not reply and result.get("llm_error"):
             reply = "Sorry, my brain is not answering right now."
@@ -262,7 +276,8 @@ class Handler(BaseHTTPRequestHandler):
         q = lambda s: urllib.parse.quote(s or "", safe=" ,.!?'")
         # 200 with an empty body = nothing to say (e.g. Whisper heard nothing)
         self._send(200, float_to_pcm16(speech), "audio/L16; rate=16000; channels=1",
-                   {"X-Happy-Text": q(result.get("text")), "X-Happy-Reply": q(reply)})
+                   {"X-Happy-Text": q(result.get("text")), "X-Happy-Reply": q(reply),
+                    "X-Happy-Ignored": "1" if result.get("ignored") else "0"})
 
     def _chat(self):
         text = (self._read_json().get("text") or "").strip()
@@ -313,7 +328,10 @@ def main():
                    help="Kokoro voice, e.g. af_heart, af_bella, am_michael, bm_george, am_puck")
     p.add_argument("--speed", type=float, default=1.0, help="speaking speed, e.g. 0.9 or 1.2")
     p.add_argument("--no-tts", action="store_true", help="don't load Kokoro (no /talk speech, no /say)")
+    p.add_argument("--wake-words", default="happy",
+                   help="comma-separated names Happy answers to in hands-free mode ('' = answer everything)")
     args = p.parse_args()
+    args.wake_words = {w.strip().lower() for w in args.wake_words.split(",") if w.strip()}
     if args.language == "auto":
         args.language = None
 

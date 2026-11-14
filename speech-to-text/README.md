@@ -5,7 +5,7 @@ How to install and test Happy's ears (Whisper) and brain (Gemma in LM Studio), o
 ```
  ESP32-S3 (body)                              Windows PC (brain)
  ───────────────                              ──────────────────
- hold BOOT, talk
+ "Happy, ..."
  INMP441 mic ──── 16 kHz audio over Wi-Fi ──► stt_server.py  POST /talk
                                                  1. Whisper     speech -> text    ◄── this guide
                                                  2. Gemma       text -> answer    ◄── this guide (LM Studio, port 1234)
@@ -113,13 +113,17 @@ If you see "Unable to connect" or "Failed to connect", the server isn't running.
 
 **Test 2: does Gemma answer?**
 ```powershell
-curl.exe http://localhost:1234/v1/chat/completions -H "Content-Type: application/json" -d '{\"model\":\"google/gemma-4-26b-a4b-qat\",\"messages\":[{\"role\":\"user\",\"content\":\"Say hi in one sentence\"}],\"reasoning_effort\":\"none\"}'
+'{"model":"google/gemma-4-26b-a4b-qat","messages":[{"role":"user","content":"Say hi in one sentence"}],"reasoning_effort":"none"}' | curl.exe http://localhost:1234/v1/chat/completions -H "Content-Type: application/json" --data-binary "@-"
 ```
 Expected: a JSON answer with `"content": "Hi there! ..."`. The first call can take up to a
 minute while the model loads.
 
 > In PowerShell, always type `curl.exe`. Plain `curl` is a PowerShell alias for a different
-> command that doesn't understand `-H` and `-d`.
+> command that doesn't understand `-H`.
+>
+> JSON is **piped** into curl (`'{...}' | curl.exe ... --data-binary "@-"`) instead of passed
+> with `-d`. Windows PowerShell breaks `-d` text that contains both quotes and spaces into
+> separate words, and curl then fails with `Could not resolve host`.
 
 ## Step 5: Start the Happy server by hand
 
@@ -166,7 +170,7 @@ Each test checks one more piece.
 
 ### 6a. The brain (LM Studio) — `/chat`
 ```powershell
-curl.exe -X POST http://localhost:8000/chat -H "Content-Type: application/json" -d '{\"text\":\"Hi Happy, who are you?\"}'
+'{"text":"Hi Happy, who are you?"}' | curl.exe -X POST http://localhost:8000/chat -H "Content-Type: application/json" --data-binary "@-"
 ```
 Expected: `"reply": "I am Happy, a little robot made from spare parts. ..."`.
 If you get `llm_error` instead, go back to Step 4.
@@ -237,14 +241,24 @@ can't reach the PC either.
 ```
 Wi-Fi: connecting to your-wifi....
 Wi-Fi: connected, IP 192.168.1.xx
-Ready. Hold BOOT, talk, release.
+Ready. Say "Happy, ..." (or hold BOOT, talk, release).
 ```
 
 ## Step 9: Talk to Happy
 
-1. Hold the **BOOT** button.
-2. Say something like "Hello Happy, what's your favorite color?"
-3. Let go.
+Just talk: say something like "Hello Happy, what's your favorite color?" Happy starts recording
+when it hears speech and stops after a short pause (0.8 s). It only answers when Whisper hears
+its name, so ordinary talk in the room is transcribed but ignored:
+```
+Listening...
+Recorded 1.9 s, sending...
+You:   Can you pass me the salt?
+(not talking to Happy - say "Happy" to wake it)
+```
+For 8 seconds after an answer you can reply without saying "Happy" again, so a conversation flows.
+
+Holding the **BOOT** button still works as push-to-talk (hold, talk, let go), and then the name
+isn't needed.
 
 Expected in the Serial Monitor:
 ```
@@ -265,6 +279,13 @@ Microphone settings you can adjust in the sketch:
 | `MIC_SLOT` | `0` | Whisper always hears nothing and `peak` in the server window is near 0: try `1` |
 | `GAIN_SHIFT` | `14` | The recording is too quiet (`13`) or distorted (`15`) |
 | `MAX_SECONDS` | `10` | You want longer questions |
+| `HANDS_FREE` | `true` | You want the BOOT button only (`false`) |
+| `MIN_LEVEL` | `300` | Happy starts recording on background noise (raise it) or misses quiet speech (lower it). Set `SHOW_LEVELS = true` to see the levels in the Serial Monitor |
+| `SILENCE_MS` | `800` | Happy cuts you off mid-sentence (raise it) or waits too long after you stop (lower it) |
+| `FOLLOW_UP_MS` | `8000` | Happy keeps answering things not meant for it (`0` = always need the name) |
+
+The name Happy answers to is set on the server: `py stt_server.py --wake-words happy,robot`
+(`--wake-words ""` answers everything it hears).
 
 To hear exactly what the microphone picked up, play `last_recording.wav`. It's in the `brain`
 folder when you start the server by hand, and in `brain\logs` when it runs from autostart.
