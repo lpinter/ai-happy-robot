@@ -1,6 +1,10 @@
-# Scrappy: an AI desk robot from a junk drawer
+# Happy: an AI desk robot from a junk drawer
 
-Scrappy is a small desk companion. It can **hear** you, **talk** back, **see** through a camera, show a **face** on a tiny screen, **turn its head**, and it knows when you **pat** it. It's built only from parts that were already in my junk drawer, on breadboards and jumper wires, with nothing new bought.
+Happy is a small desk companion. It can **hear** you, **talk** back, **see** through a camera, show a **face** on a tiny screen, **turn its head**, and it knows when you **pat** it. It was first built by Anant with instructions from Claude AI and introduced in the [I Gave Claude My Junk Drawer. It Built Me a Robot... (Code Included)](https://www.youtube.com/watch?v=HRDlMXU2BnY) YouTube video. He built it  only from parts that were already in his junk drawer, on breadboards and jumper wires, with nothing new bought.
+
+His original instructions in his YouTube video and in the GitHub repository did not contain all steps to build the robot, so I have forked his repository from [https://github.com/techwithanant/scrappy](https://github.com/techwithanant/scrappy) to add more technical information and code to build and configure the robot.
+
+My step-by-step instructions are in my blog at [Building Happy, the AI hardware robot](https://pinter.org/archives/17928).
 
 **Watch the build:** *(video link coming soon)*
 
@@ -26,18 +30,24 @@ In my build, everything runs **locally**: Whisper for speech-to-text, Google's *
 
 All of these are small, cheap and easy to find. Use what you have; similar parts work too.
 
-| Job | Part | Notes |
-|---|---|---|
-| Brain on the bot | **ESP32-S3 dev board, N16R8** (with a camera connector) | 16 MB flash, 8 MB PSRAM. Get a **pre-soldered** one if you can |
-| Eyes | **OV5640** or **OV2640** camera | Plugs into the board's camera socket |
-| Ears | **INMP441** I2S microphone | |
-| Mouth | **MAX98357A** I2S amplifier + a small speaker (4–8 Ω, ~3 W) | The speaker connects through the amp's screw terminal |
-| Face | **1.5" 128×128 SPI colour OLED** (SSD1351 driver) | 7 pins |
-| Neck | **Micro servo** (SG90 / MG90S) | Turns the face left and right |
-| Touch | A small square of **copper sheet** (~2 × 2 cm) + one wire | The head-pat sensor |
-| Power | **3.7 V LiPo** (e.g. 2000 mAh) + **J5019** charger/boost board set to 5 V | Lets Scrappy leave the desk |
-| Building | Breadboards (two full-size side by side, or four minis) + jumper wires | The ESP32 is too wide for one breadboard |
-| Thinking | A computer on the same Wi-Fi | A gaming PC with an RTX 3060-class GPU is enough, or use a smaller model |
+All of these parts come in pairs, so you can build one circuit on the breadboard, and based on the working prototype build one on a permanent board, so you can proudly show it to your non-technical friends and relatives.
+
+| Job | Part | Notes | Source |
+|---|---|---|---|
+| Brain on the bot | **ESP32-S3 dev board, N16R8** (with a camera connector) | 16 MB flash, 8 MB PSRAM. Get a **pre-soldered** one if you can | [ESP32-S3-CAM Development Board with OV5640 Camera +Antenna, 16MB Flash 8MB PSRAM ESP32-S3 N16R8 Module with Dual USB-C WiFi BT MCU Microcontroller for IoT, MicroPython,DIY Projects and AI Project](https://www.amazon.com/dp/B0H86XY7GB?ref=ppx_yo2ov_dt_b_fed_asin_title) |
+| Eyes | **OV5640** or **OV2640** camera | Plugs into the board's camera socket | The ESP32 board above already has the 5-megapixel OV5640 camera installed |
+| Ears | **INMP441** I2S microphone | | [2Pcs INMP441 Omnidirectional MEMS Microphone Module I2S Digital Output High Precision Low Power Compatible with Arduino ESP32](https://www.amazon.com/dp/B0H6S3RJZ9?ref=ppx_yo2ov_dt_b_fed_asin_title) |
+| Amplifier | **MAX98357A** I2S amplifier| Audio amplifier to drive the speaker | [2PCS MAX98357 MAX98357A I2S 3W Class D Amplifier Breakout Interface I2S DAC Decoder for Audio Raspberry Pi Esp32 Arduino Zero](https://www.amazon.com/dp/B0DPJRLMDJ?ref=ppx_yo2ov_dt_b_fed_asin_title) | 
+| Mouth | Small speaker (4–8 Ω, ~3 W) | The speaker connects through the amp's screw terminal |  [Gikfun 4Ohm 40mm Diameter 3W Full Range Audio Speaker Stereo Woofer Loudspeaker for Arduino (Pack of 2pcs) EK1794](https://www.amazon.com/dp/B01LN8ONG4?ref=ppx_yo2ov_dt_b_fed_asin_title) |
+| Face | **1.5" 128×128 SPI colour OLED** (SSD1351 driver) | 7 pins | [1.5inch RGB OLED Module, 128x128 SPI Display for Raspberry Pi](https://www.amazon.com/dp/B07D9NVJPZ?ref=ppx_yo2ov_dt_b_fed_asin_title) |
+| Neck | **Micro servo** (SG90 / MG90S) | Turns the face left and right | [MG90S 9G Micro Servo Motor Metal Gear for RC Plane Robot Arduino (2)](https://www.amazon.com/dp/B0BWJ4RKGV?ref=ppx_yo2ov_dt_b_fed_asin_title&th=1) |
+| Touch | A small square of **copper sheet** (~2 × 2 cm) + one wire | The head-pat sensor | |
+| Battery | **3.7 V LiPo** (e.g. 2000 mAh) | Lets Scrappy leave the desk | [EEMB 3.7V 103454 2000mAh Lipo Battery Rechargeable JST 2.0mm 1-Pack](https://www.amazon.com/dp/B08214DJLJ?ref=ppx_yo2ov_dt_b_fed_asin_title&th=1) |
+| Charger | **J5019** or similar charger/boost board set to 5 V | Charges the li-po battery and upconverts the battery voltage to steady 5V | [Type-C USB 5V 2A Step-Up Power Boost Converter Module Lithium Battery Charging Protection Board Module 4.2V/4.35V 10pcs](https://www.amazon.com/dp/B0GCWKHQH3?ref=ppx_yo2ov_dt_b_fed_asin_title) |  
+| Battery wires | | Connect the battery to the charged/booster board | [10pcs Upgraded Tiny Whoop JST-PH 2.0 Male and Female Connector Cable for Battery JJRC H36 H67 Blade Inductrix E010 E013](https://www.amazon.com/dp/B07NWD5NTN?ref=ppx_yo2ov_dt_b_fed_asin_title) |
+| Building | Breadboards (two full-size side by side, or four minis) + jumper wires | The ESP32 is too wide for one breadboard | [WWZMDiB 6 Pcs Mini Small Breadboard kit White 170 Tie Points (Includes 10-pin Male/Female + 10-pin Male/Female Jumper Wires)](https://www.amazon.com/dp/B09YXQJMTG?ref=ppx_yo2ov_dt_b_fed_asin_title) |
+| Wires | | Additional breadboard wires | [ELEGOO 120pcs Multicolored Dupont Wire M-F, M-M, F-F for Breadboard Jumper](https://www.amazon.com/dp/B01EV70C78?ref=ppx_yo2ov_dt_b_fed_asin_title&th=1) |
+| Thinking | A computer on the same Wi-Fi | A gaming PC with an RTX 3060-class GPU is enough, or use a smaller model | |
 
 ---
 
@@ -46,15 +56,22 @@ All of these are small, cheap and easy to find. Use what you have; similar parts
 ### Pin map
 
 **Face: 1.5" SPI OLED**
-| OLED pin | ESP32-S3 |
-|---|---|
-| VCC | 3V3 |
-| GND | GND |
-| SCL / SCK | GPIO 21 |
-| SDA / MOSI | GPIO 47 |
-| DC | GPIO 2 |
-| CS | GPIO 14 |
-| RES / RST | EN (resets with the board) |
+
+The first column is the pin list of the ESP32 board. The second column has the pins of the display I purchased. The third column shows the pins of the display from the original article. 
+| ESP32-S3 | OLED (my display) | OLED (original display) |
+|----------|----------|-------------|
+| 3V3      | VCC      | VCC o
+| GND      | GND      | GND |
+| GPIO 47  | DIN      | SDA / MOSI |
+| GPIO 21  | CLK      | SCL / SCK |
+| GPIO 14  | CS       | CS |
+| GPIO 2   | DC       | DC |
+| EN       | RST      | RES / RST|
+
+## Notes
+
+- **RST to EN:** the display resets whenever the board resets. If the display stays blank after power-up, move RST to a free GPIO (for example GPIO 1) and give that pin to the display library as the reset pin.
+- **VCC:** use 3V3 unless the display's listing says it accepts 5V.
 
 **Ears: INMP441 mic**
 | Mic pin | ESP32-S3 |
@@ -152,7 +169,7 @@ Each sketch tests **one** part on its own, so you know it's wired right before y
 **How to upload (Arduino IDE)**
 1. Install the **esp32** boards package by Espressif (version 3.x) from the Boards Manager. No other libraries are needed.
 2. Board: **ESP32S3 Dev Module**. Flash size: **16MB**. PSRAM: **OPI PSRAM** (the camera needs it).
-3. Plug the USB-C into the board's **UART/COM** port, pick that port, then Upload.
+3. Plug the USB-C into the board's **TTL** port, pick that port, then Upload.
 4. Open the Serial Monitor at **115200** baud.
 
 `examples/personality.md` shows how the robot's character is written: one short text file that the AI model reads before every reply.
