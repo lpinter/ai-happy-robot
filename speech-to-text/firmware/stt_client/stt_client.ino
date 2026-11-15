@@ -8,6 +8,10 @@
 // the PC's stt_server.py /talk. The PC runs Whisper -> Gemma -> Kokoro and sends
 // back Happy's spoken answer, which plays on the MAX98357A (same pins as amp_test).
 // What you said and Happy's answer are also printed on the Serial Monitor (115200).
+// The 1.5" SSD1351 OLED (same pins and driver code as firmware/tests/oled_face) shows Happy's
+// face: it blinks while waiting, opens its eyes wide while listening, looks up while thinking,
+// and moves its mouth with the sound while speaking. The face runs in its own task on core 0,
+// so drawing never interrupts the microphone or the speaker.
 //
 // Board: ESP32S3 Dev Module, Flash 16MB, PSRAM "OPI PSRAM" (needed for the buffers).
 // Core:  esp32 by Espressif 3.x (uses ESP_I2S.h, same as mic_test and amp_test).
@@ -15,6 +19,7 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ESP_I2S.h>
+#include <SPI.h>
 
 // Wi-Fi name/password and server URL live in secrets.h (gitignored).
 // First time: copy secrets.example.h to secrets.h and fill in your values.
@@ -66,8 +71,178 @@ float noise = 0;                 // background noise level, learned while it's q
 unsigned long lastAnswerAt = 0;  // when Happy last finished speaking (0 = never)
 unsigned long speechStartAt = 0; // when the current recording started
 
+// ------------------------------------------------------------------ face (1.5" SSD1351 OLED)
+// Wiring (from the README / oled_face): CLK -> GPIO 21, DIN -> GPIO 47, CS -> GPIO 14,
+// DC -> GPIO 2, RST -> EN, VCC -> 3V3, GND -> GND.
+const bool SHOW_FACE   = true;   // false = no display connected
+const int PIN_OLED_SCK  = 21;
+const int PIN_OLED_MOSI = 47;
+const int PIN_OLED_CS   = 14;
+const int PIN_OLED_DC   = 2;
+
+const uint16_t EYES  = 0x07FF;   // cyan (RGB565)
+const uint16_t SMILE = 0xFD20;   // orange
+
+enum Face { FACE_SLEEP, FACE_IDLE, FACE_LISTEN, FACE_THINK, FACE_SPEAK, FACE_SAD };
+volatile Face face = FACE_SLEEP; // set by the main loop, drawn by faceTask
+volatile float mouthOpen = 0;    // 0..1, how loud Happy is speaking right now
+
+uint16_t fb[128 * 128];          // RGB565, stored big-endian for the panel
+
+void oledSend(bool data, uint8_t b) {
+  digitalWrite(PIN_OLED_DC, data ? HIGH : LOW);
+  digitalWrite(PIN_OLED_CS, LOW);
+  SPI.transfer(b);
+  digitalWrite(PIN_OLED_CS, HIGH);
+}
+
+// SSD1351 takes command parameters with DC high: {command, param count, params...}.
+void oledCmds(const uint8_t* seq, size_t len) {
+  for (size_t i = 0; i < len;) {
+    oledSend(false, seq[i]);
+    uint8_t n = seq[i + 1];
+    for (uint8_t k = 0; k < n; k++) oledSend(true, seq[i + 2 + k]);
+    i += 2 + n;
+  }
+}
+
+void oledInit() {
+  const uint8_t seq[] = {
+    0xFD, 1, 0x12, 0xFD, 1, 0xB1,  // unlock
+    0xAE, 0,                       // display off
+    0xB3, 1, 0xF1,                 // clock
+    0xCA, 1, 0x7F,                 // 128 rows
+    0xA0, 1, 0x74,                 // remap: 65k colour, COM split
+    0xA1, 1, 0x00, 0xA2, 1, 0x00,  // start line, offset
+    0xB5, 1, 0x00, 0xAB, 1, 0x01,  // GPIO off, internal regulator on
+    0xB1, 1, 0x32, 0xBE, 1, 0x05,  // precharge, VCOMH
+    0xC1, 3, 0xC8, 0x80, 0xC8,     // contrast A/B/C
+    0xC7, 1, 0x0F,                 // master contrast
+    0xB4, 3, 0xA0, 0xB5, 0x55,     // segment low voltage
+    0xB6, 1, 0x01,                 // second precharge
+    0xA6, 0,                       // normal display
+    0xAF, 0,                       // display on
+  };
+  oledCmds(seq, sizeof(seq));
+}
+
+void oledShow() {
+  const uint8_t win[] = {0x15, 2, 0x00, 0x7F, 0x75, 2, 0x00, 0x7F};
+  oledCmds(win, sizeof(win));
+  oledSend(false, 0x5C);         // write RAM
+  digitalWrite(PIN_OLED_DC, HIGH);
+  digitalWrite(PIN_OLED_CS, LOW);
+  SPI.writeBytes((uint8_t*)fb, sizeof(fb));
+  digitalWrite(PIN_OLED_CS, HIGH);
+}
+
+void px(int x, int y, uint16_t c) {
+  if (x < 0 || x > 127 || y < 0 || y > 127) return;
+  fb[y * 128 + x] = (c >> 8) | (c << 8);  // swap to big-endian
+}
+
+void ellipse(int cx, int cy, int rx, int ry, uint16_t c) {
+  for (int y = -ry; y <= ry; y++)
+    for (int x = -rx; x <= rx; x++)
+      if ((float)x * x / (rx * rx) + (float)y * y / (ry * ry) <= 1.0f) px(cx + x, cy + y, c);
+}
+
+// A 4-pixel-thick curve: bend > 0 = smile (ends up), bend < 0 = frown, 0 = flat line.
+void mouthCurve(int cy, int halfWidth, int bend) {
+  for (int x = -halfWidth; x <= halfWidth; x++) {
+    int y = cy - bend * (x * x) / (halfWidth * halfWidth);
+    for (int t = 0; t < 4; t++) px(64 + x, y + t, SMILE);
+  }
+}
+
+// Two lips that meet at the corners and part in the middle by `open` pixels, on a slight smile.
+void lips(int cy, int halfWidth, int open) {
+  for (int x = -halfWidth; x <= halfWidth; x++) {
+    float t = (float)(x * x) / (halfWidth * halfWidth);  // 0 in the middle, 1 at the corners
+    int base = cy - (int)(8 * t);                        // corners curve up
+    int gap = (int)(open / 2.0f * (1 - t));
+    for (int k = 0; k < 3; k++) {
+      px(64 + x, base - gap + k - 1, SMILE);             // upper lip
+      px(64 + x, base + gap + k - 1, SMILE);             // lower lip
+    }
+  }
+}
+
+// mouth = 0..18 (how open while speaking), dots = 0..3 (thinking animation)
+void drawFace(Face f, bool blink, int mouth, int dots) {
+  memset(fb, 0, sizeof(fb));
+  int eyeH = blink ? 2 : 18;
+  switch (f) {
+    case FACE_SLEEP:                               // eyes closed, waiting for Wi-Fi
+      ellipse(40, 54, 14, 2, EYES);
+      ellipse(88, 54, 14, 2, EYES);
+      mouthCurve(94, 12, 0);
+      break;
+    case FACE_IDLE:                                // the oled_face test face
+      ellipse(40, 52, 14, eyeH, EYES);
+      ellipse(88, 52, 14, eyeH, EYES);
+      mouthCurve(92, 24, 14);
+      break;
+    case FACE_LISTEN:                              // big eyes, lips slightly parted
+      ellipse(40, 50, 16, blink ? 2 : 22, EYES);
+      ellipse(88, 50, 16, blink ? 2 : 22, EYES);
+      lips(96, 16, 4);
+      break;
+    case FACE_THINK:                               // looking up and to the side, "..." below
+      ellipse(48, 44, 12, blink ? 2 : 14, EYES);
+      ellipse(96, 44, 12, blink ? 2 : 14, EYES);
+      mouthCurve(90, 12, 0);
+      for (int i = 0; i < dots; i++) ellipse(52 + i * 12, 112, 3, 3, SMILE);
+      break;
+    case FACE_SPEAK:                               // lips part with the sound
+      ellipse(40, 52, 14, 18, EYES);
+      ellipse(88, 52, 14, 18, EYES);
+      lips(94, 24, mouth);
+      break;
+    case FACE_SAD:                                 // something went wrong
+      ellipse(40, 56, 14, 10, EYES);
+      ellipse(88, 56, 14, 10, EYES);
+      mouthCurve(92, 20, -10);
+      break;
+  }
+  oledShow();
+}
+
+// Runs on core 0 and redraws only when the picture changes, so the mic loop on core 1
+// never waits for the display (a full frame takes ~33 ms at 8 MHz).
+void faceTask(void*) {
+  pinMode(PIN_OLED_CS, OUTPUT);
+  pinMode(PIN_OLED_DC, OUTPUT);
+  digitalWrite(PIN_OLED_CS, HIGH);
+  SPI.begin(PIN_OLED_SCK, -1, PIN_OLED_MOSI, PIN_OLED_CS);
+  SPI.beginTransaction(SPISettings(8000000, MSBFIRST, SPI_MODE0));
+  vTaskDelay(pdMS_TO_TICKS(200)); // RST is tied to EN, so the panel resets with the board
+  oledInit();
+
+  unsigned long nextBlink = millis() + random(2000, 4500);
+  int lastKey = -1;
+  while (true) {
+    Face f = face;
+    unsigned long now = millis();
+    bool blink = false;
+    if (f == FACE_IDLE || f == FACE_LISTEN || f == FACE_THINK) {
+      if (now >= nextBlink + 140) nextBlink = now + random(2000, 4500);
+      else if (now >= nextBlink) blink = true;
+    }
+    int mouth = f == FACE_SPEAK ? (int)(mouthOpen * 18) : 0;
+    int dots = f == FACE_THINK ? (now / 300) % 4 : 0;
+    int key = f * 10000 + blink * 1000 + mouth * 10 + dots;
+    if (key != lastKey) {
+      drawFace(f, blink, mouth, dots);
+      lastKey = key;
+    }
+    vTaskDelay(pdMS_TO_TICKS(30));
+  }
+}
+
 void connectWifi() {
   if (WiFi.status() == WL_CONNECTED) return;
+  face = FACE_SLEEP;
   Serial.printf("Wi-Fi: connecting to %s", WIFI_SSID);
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
@@ -88,6 +263,7 @@ void connectWifi() {
     }
   }
   Serial.printf("\nWi-Fi: connected, IP %s\n", WiFi.localIP().toString().c_str());
+  face = FACE_IDLE;
 }
 
 // Reads one block from the mic as 16-bit mono into `out`. Returns the sample count;
@@ -121,6 +297,7 @@ void flushMic(int ms) {
 size_t recordWhileHeld() {
   size_t n = 0;
   float level;
+  face = FACE_LISTEN;
   flushMic(100);                 // let the mic settle
   while (digitalRead(PIN_TALK) == LOW && n < MAX_SAMPLES) {
     size_t got = readBlock(block, level);
@@ -164,6 +341,7 @@ size_t listenForSpeech() {
 
   // 2. record: first the preroll (it holds the start of the word), then until a silence
   speechStartAt = millis();
+  face = FACE_LISTEN;
   Serial.println("Listening...");
   size_t n = 0;
   size_t oldest = (head + PREROLL - filled) % PREROLL;
@@ -179,6 +357,7 @@ size_t listenForSpeech() {
   }
   if (voiced * BLOCK_MS < MIN_SPEECH_MS) {
     Serial.println("Just a noise, ignored.");
+    face = FACE_IDLE;
     return 0;
   }
   // cut the trailing silence down to ~300 ms (less for Whisper to imagine words in)
@@ -207,13 +386,19 @@ void playReply(size_t bytes) {
   size_t samples = bytes / 2;
   for (size_t done = 0; done < samples;) {
     size_t n = min((size_t)256, samples - done);
+    int peak = 0;
     for (size_t i = 0; i < n; i++) {
       int16_t s = (int32_t)in[done + i] * VOLUME / 100;
       frame[2 * i] = frame[2 * i + 1] = s;
+      peak = max(peak, abs((int)in[done + i]));
     }
+    // the server normalises speech to ~90% of full scale, so ~20000 is a fully open mouth
+    float target = min(1.0f, peak / 20000.0f);
+    mouthOpen = mouthOpen + (target - mouthOpen) * (target > mouthOpen ? 0.6f : 0.25f);
     amp.write((uint8_t*)frame, n * 4);
     done += n;
   }
+  mouthOpen = 0;
   memset(frame, 0, sizeof(frame));                  // a little silence so the amp doesn't pop
   for (int i = 0; i < 8; i++) amp.write((uint8_t*)frame, sizeof(frame));
 }
@@ -222,6 +407,7 @@ void playReply(size_t bytes) {
 // Returns true if Happy answered.
 bool talkToHappy(size_t samples, bool needName) {
   connectWifi();
+  face = FACE_THINK;
   HTTPClient http;
   http.setTimeout(60000);        // Whisper + Gemma + Kokoro; the first request after a restart is slower
   http.begin(STT_URL);
@@ -234,19 +420,23 @@ bool talkToHappy(size_t samples, bool needName) {
   if (code != 200) {
     Serial.printf("HTTP error %d: %s\n", code, http.errorToString(code).c_str());
     http.end();
+    face = FACE_SAD;
+    delay(1500);                 // show the sad face for a moment
+    face = FACE_IDLE;
     return false;
   }
   Serial.printf("You:   %s\n", urlDecode(http.header("X-Happy-Text")).c_str());
   if (http.header("X-Happy-Ignored") == "1") {
     Serial.println("(not talking to Happy - say \"Happy\" to wake it)");
     http.end();
+    face = FACE_IDLE;
     return false;
   }
   Serial.printf("Happy: %s\n", urlDecode(http.header("X-Happy-Reply")).c_str());
 
   // download the whole answer first, then play it (no gaps if Wi-Fi stutters)
   int len = http.getSize();
-  if (len <= 0) { Serial.println("(nothing to say)"); http.end(); return false; }
+  if (len <= 0) { Serial.println("(nothing to say)"); http.end(); face = FACE_IDLE; return false; }
   size_t want = min((size_t)len, MAX_REPLY_BYTES) & ~(size_t)1;
   WiFiClient* stream = http.getStreamPtr();
   size_t got = 0;
@@ -258,7 +448,9 @@ bool talkToHappy(size_t samples, bool needName) {
   }
   http.end();
   Serial.printf("Speaking %.1f s...\n", got / 2.0f / SAMPLE_RATE);
+  face = FACE_SPEAK;
   playReply(got);
+  face = FACE_IDLE;
   return true;
 }
 
@@ -266,6 +458,7 @@ void setup() {
   Serial.begin(115200);
   delay(500);
   pinMode(PIN_TALK, INPUT_PULLUP);
+  if (SHOW_FACE) xTaskCreatePinnedToCore(faceTask, "face", 4096, nullptr, 1, nullptr, 0);
 
   pcm = (int16_t*)ps_malloc(MAX_SAMPLES * sizeof(int16_t));
   reply = (uint8_t*)ps_malloc(MAX_REPLY_BYTES);
@@ -293,7 +486,7 @@ void loop() {
     Serial.println("Listening...");
     n = recordWhileHeld();
     while (digitalRead(PIN_TALK) == LOW) delay(10);   // wait for release
-    if (n < SAMPLE_RATE / 4) { Serial.println("Too short, ignored."); return; }
+    if (n < SAMPLE_RATE / 4) { Serial.println("Too short, ignored."); face = FACE_IDLE; return; }
   } else if (HANDS_FREE) {
     n = listenForSpeech();
     if (n == 0) return;

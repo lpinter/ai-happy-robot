@@ -30,7 +30,7 @@ Run all commands in **PowerShell** (Start menu → "PowerShell"), not in the old
 | `brain/requirements.txt` | Python packages for the server |
 | `brain/start_happy.ps1` | Starts LM Studio's server, then `stt_server.py`, and logs to `brain/logs/stt_server.log` |
 | `brain/install_autostart.ps1` | Makes Windows run `start_happy.ps1` every time you log on |
-| `firmware/stt_client/stt_client.ino` | ESP32 sketch: push-to-talk, sends audio, plays the answer |
+| `firmware/stt_client/stt_client.ino` | ESP32 sketch: listens, sends audio, plays the answer, shows Happy's face on the OLED |
 | `../examples/personality.md` | Happy's character. Gemma reads it before every answer |
 | `brain/memory.md` | What Happy has learned from you. Gemma reads it before every answer, and Happy adds to it |
 
@@ -272,6 +272,23 @@ Speaking 5.1 s...
 The `You:` line proves that hearing works, and the `Happy:` line proves that thinking works.
 The server window shows the same conversation. If the speaker is wired, you also hear the answer;
 setting up and tuning the sound is in the [text-to-speech guide](../text-to-speech/README.md).
+
+### Happy's face
+
+If the 1.5" OLED is wired as in the main [README](../README.md) (and `oled_face` passes), the
+sketch shows Happy's face while you talk:
+
+| Face | When |
+|------|------|
+| Eyes closed | Connecting to Wi-Fi |
+| Smile, blinking | Waiting for you to talk |
+| Big eyes, lips slightly parted | Listening (recording) |
+| Eyes looking up, "..." | Thinking: the PC is running Whisper, Gemma and Kokoro |
+| Two lips that part with the sound | Speaking |
+| Frown | The PC didn't answer (`HTTP error ...`), shown for 1.5 s |
+
+The face runs in its own task, so it doesn't slow down listening or speaking. Without a display,
+set `SHOW_FACE = false` at the top of the face section.
 
 Microphone settings you can adjust in the sketch:
 
