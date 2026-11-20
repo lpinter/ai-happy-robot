@@ -32,7 +32,7 @@ const int PIN_SD  = 1;
 const int PIN_TALK = 0;          // BOOT button, LOW when pressed
 
 const int SAMPLE_RATE = 16000;
-const int MAX_SECONDS = 10;
+const int MAX_SECONDS = 20;
 const int MIC_SLOT    = 0;       // L/R tied to GND -> left slot (0). If text is always empty and peak ~0, try 1.
 const int GAIN_SHIFT  = 14;      // 32-bit sample >> 16 = plain 16-bit; >> 14 adds ~12 dB (INMP441 is quiet)
 

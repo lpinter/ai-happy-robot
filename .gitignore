@@ -1,5 +1,6 @@
 logs/
 __pycache__/
+.venv/
 secrets.h
 photo*.jpg
 last_recording.wav

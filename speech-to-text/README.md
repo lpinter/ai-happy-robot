@@ -62,18 +62,30 @@ Expected: `Python 3.12.x`
 > Always use `py -3.12`, not `python`. On many Windows PCs, `python` opens the Microsoft Store
 > instead of running Python.
 
-## Step 2: Install PyTorch with GPU support
+## Step 2: Create a virtual environment and install PyTorch with GPU support
+
+The packages go into a virtual environment in `brain\.venv`, not into the global Python. That keeps
+them from clashing with other programs that use Python, such as FreeCAD.
+
+```powershell
+cd D:\_Laci\_Current\Projects\Git\AI\ai-happy-robot\speech-to-text\brain
+py -3.12 -m venv .venv
+```
+
+From now on, run Python as `.venv\Scripts\python.exe` from the `brain` folder. Or activate the
+environment once per PowerShell window with `.venv\Scripts\Activate.ps1`, after which `python`
+uses the environment.
 
 PyTorch is the engine that runs Whisper and Kokoro. Install it **before** the other packages, or
 pip installs a CPU-only version.
 
 ```powershell
-py -3.12 -m pip install torch --index-url https://download.pytorch.org/whl/cu126
+.venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cu126
 ```
 
 **Test:**
 ```powershell
-py -3.12 -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+.venv\Scripts\python.exe -c "import torch; print(torch.__version__, torch.cuda.is_available())"
 ```
 Expected: something like `2.x.x+cu126 True`.
 If it ends with `False`, PyTorch can't see the graphics card. Update the Nvidia driver and try
@@ -83,14 +95,14 @@ again. Everything still works on the CPU, just slower.
 
 ```powershell
 cd D:\_Laci\_Current\Projects\Git\AI\ai-happy-robot\speech-to-text\brain
-py -3.12 -m pip install -r requirements.txt
+.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 This also installs Kokoro, Happy's voice, because the server loads both. The voice is covered in
 the [text-to-speech guide](../text-to-speech/README.md).
 
 **Test:**
 ```powershell
-py -3.12 -c "import whisper, kokoro, soundfile; print('all good')"
+.venv\Scripts\python.exe -c "import whisper, kokoro, soundfile; print('all good')"
 ```
 Expected: `all good`
 
@@ -130,7 +142,7 @@ minute while the model loads.
 
 ```powershell
 cd D:\_Laci\_Current\Projects\Git\AI\ai-happy-robot\speech-to-text\brain
-py -3.12 stt_server.py
+.venv\Scripts\python.exe stt_server.py
 ```
 
 The **first start downloads the models** (Whisper ~460 MB, Kokoro ~330 MB, plus a small language
@@ -369,7 +381,7 @@ powershell -ExecutionPolicy Bypass -File install_autostart.ps1 -Uninstall
 
 | What you see | Likely cause and fix |
 |--------------|----------------------|
-| `python` opens the Microsoft Store | Use `py -3.12` instead |
+| `python` opens the Microsoft Store | Use `.venv\Scripts\python.exe` from the `brain` folder (or `py -3.12` for Step 2) |
 | `curl : A parameter cannot be found that matches parameter name 'H'` | Use `curl.exe`, not `curl` |
 | `Unable to connect` on port 1234 | LM Studio's server isn't running: Step 4 |
 | `"reply": ""` and `llm_error` in the JSON | Same: LM Studio's server isn't running, or the model name is wrong (`--lm-model`) |

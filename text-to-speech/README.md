@@ -33,14 +33,16 @@ Run all commands in **PowerShell**, and always type `curl.exe`, not `curl`.
 
 ## Step 1: Check that Kokoro is installed
 
+Kokoro lives in the project's virtual environment (speech-to-text guide, Step 2):
 ```powershell
-py -3.12 -c "import kokoro, soundfile; print('kokoro ok')"
+cd D:\_Laci\_Current\Projects\Git\AI\ai-happy-robot\speech-to-text\brain
+.venv\Scripts\python.exe -c "import kokoro, soundfile; print('kokoro ok')"
 ```
 Expected: `kokoro ok`
 
 If you get `ModuleNotFoundError`, install it:
 ```powershell
-py -3.12 -m pip install kokoro soundfile
+.venv\Scripts\python.exe -m pip install kokoro soundfile
 ```
 
 ## Step 2: Check that the server loaded the voice
@@ -73,7 +75,7 @@ Expected: your PC plays Happy's voice. The server window shows `say    : Hello, 
 Stop the server (**Ctrl+C**) and start it again with a different voice:
 ```powershell
 cd D:\_Laci\_Current\Projects\Git\AI\ai-happy-robot\speech-to-text\brain
-py -3.12 stt_server.py --voice am_michael
+.venv\Scripts\python.exe stt_server.py --voice am_michael
 ```
 Then repeat Step 3 to hear it.
 
@@ -163,7 +165,7 @@ Sound settings at the top of the sketch:
 
 If you use the autostart task (speech-to-text guide, Step 10), it doesn't use the options you
 typed by hand. To keep your voice, open `speech-to-text/brain/start_happy.ps1` and add the
-options to the line starting with `cmd /c "py -3.12 -u stt_server.py ...`, for example:
+options to the `cmd /c` line that runs `stt_server.py`, for example:
 ```
 ... stt_server.py --voice am_michael --speed 1.1 --model ...
 ```

@@ -1,6 +1,7 @@
+# Installed into the project's virtual environment (brain\.venv), not the global Python.
 # Install the CUDA build of torch FIRST (see ../README.md, step 2), then:
-#   py -3.12 -m pip install -r requirements.txt
+#   .venv\Scripts\python.exe -m pip install -r requirements.txt
 openai-whisper   # speech-to-text
 kokoro           # text-to-speech (Happy's voice)
 soundfile
-numpy
+numpy==2.5.4     # pinned: Windows Smart App Control blocks 2.5.5's DLLs (not yet "reputable")

@@ -52,9 +52,15 @@ if (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyCon
 
 Say "Starting stt_server.py on port $Port (Whisper '$WhisperModel', language '$Language')"
 Set-Location $here
+# Use the project's own virtual environment (brain\.venv), not the global Python.
+$python = Join-Path $here ".venv\Scripts\python.exe"
+if (-not (Test-Path $python)) {
+    Say "Virtual environment not found at $python - see speech-to-text\README.md, Step 2"
+    exit 1
+}
 $env:PYTHONIOENCODING = "utf-8"
 # -u = unbuffered, so lines appear in the log immediately.
 # cmd does the redirection so the log stays plain UTF-8 (PowerShell 5.1 would write UTF-16).
-cmd /c "py -3.12 -u stt_server.py --model $WhisperModel --language $Language --port $Port --save-dir `"$logDir`" >> `"$log`" 2>&1"
+cmd /c "`"$python`" -u stt_server.py --model $WhisperModel --language $Language --port $Port --save-dir `"$logDir`" >> `"$log`" 2>&1"
 Say "stt_server.py exited with code $LASTEXITCODE"
 exit $LASTEXITCODE
