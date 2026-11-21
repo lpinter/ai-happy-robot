@@ -41,6 +41,7 @@ All of these parts come in pairs, so you can build one circuit on the breadboard
 | Mouth | Small speaker (4–8 Ω, ~3 W) | The speaker connects through the amp's screw terminal |  [Gikfun 4Ohm 40mm Diameter 3W Full Range Audio Speaker Stereo Woofer Loudspeaker for Arduino (Pack of 2pcs) EK1794](https://www.amazon.com/dp/B01LN8ONG4?ref=ppx_yo2ov_dt_b_fed_asin_title) |
 | Face | **1.5" 128×128 SPI colour OLED** (SSD1351 driver) | 7 pins | [1.5inch RGB OLED Module, 128x128 SPI Display for Raspberry Pi](https://www.amazon.com/dp/B07D9NVJPZ?ref=ppx_yo2ov_dt_b_fed_asin_title) |
 | Neck | **Micro servo** (SG90 / MG90S) | Turns the face left and right | [MG90S 9G Micro Servo Motor Metal Gear for RC Plane Robot Arduino (2)](https://www.amazon.com/dp/B0BWJ4RKGV?ref=ppx_yo2ov_dt_b_fed_asin_title&th=1) |
+| Servos 2 and 3 | **Two more micro servos** (SG90 / MG90S), same as the neck | On GPIO 46 and GPIO 0. Each robot needs three servos, so buy two more packs for a pair of robots | [MG90S 9G Micro Servo Motor Metal Gear for RC Plane Robot Arduino (2)](https://www.amazon.com/dp/B0BWJ4RKGV?ref=ppx_yo2ov_dt_b_fed_asin_title&th=1) |
 | Touch | A small square of **copper sheet** (~2 × 2 cm) + one wire | The head-pat sensor | |
 | Battery | **3.7 V LiPo** (e.g. 2000 mAh) | Lets Scrappy leave the desk | [EEMB 3.7V 103454 2000mAh Lipo Battery Rechargeable JST 2.0mm 1-Pack](https://www.amazon.com/dp/B08214DJLJ?ref=ppx_yo2ov_dt_b_fed_asin_title&th=1) |
 | Charger | **J5019** or similar charger/boost board set to 5 V | Charges the li-po battery and upconverts the battery voltage to steady 5V | [Type-C USB 5V 2A Step-Up Power Boost Converter Module Lithium Battery Charging Protection Board Module 4.2V/4.35V 10pcs](https://www.amazon.com/dp/B0GCWKHQH3?ref=ppx_yo2ov_dt_b_fed_asin_title) |  
@@ -101,6 +102,15 @@ The first column is the pin list of the ESP32 board. The second column has the p
 | Brown | GND |
 | Orange | GPIO 45 |
 
+**Extra servos 2 and 3**
+| Servo wire | Servo 2 | Servo 3 |
+|---|---|---|
+| Red | 5V | 5V |
+| Brown | GND | GND |
+| Orange | GPIO 46 | GPIO 0 |
+
+GPIO 46 and GPIO 0 are boot (strapping) pins. A servo's signal wire doesn't pull them high or low, so the board still boots normally. GPIO 0 is also the BOOT button, so pressing BOOT makes servo 3 jump, which is harmless.
+
 **Touch: copper pad**
 | Pad | ESP32-S3 |
 |---|---|
@@ -122,7 +132,7 @@ The first column is the pin list of the ESP32 board. The second column has the p
 | 35, 36, 37 | Used by the PSRAM (N16R8) |
 | 19, 20 | Native USB |
 | 43, 44 | UART (the USB port you flash through) |
-| 0, 46 | Boot / strapping pins |
+| 0, 46 | Boot / strapping pins. Only servos 2 and 3 go here; nothing that pulls the pin high or low at power-up |
 | 48 | Onboard RGB LED |
 
 ### Tips
@@ -132,7 +142,7 @@ The first column is the pin list of the ESP32 board. The second column has the p
 - **Never plug in USB and the battery at the same time.**
 - **Don't trust a multimeter with a dying battery.** Mine showed the board getting far too much voltage, when it was really the meter's own battery running low.
 - **Leave slack in the screen wires** so the neck can turn.
-- **If the board resets when the servo moves,** give the servo its own 5 V supply with a shared ground.
+- **If the board resets when the servo moves,** give the servo its own 5 V supply with a shared ground. With all three servos connected, a separate 5 V supply for the servos is strongly recommended.
 
 ---
 
@@ -145,7 +155,7 @@ Build and test **one module at a time**. When something stops working, you'll kn
 3. **Ears:** the mic on the second breadboard, six wires. Test that it hears you.
 4. **Mouth:** the amp and speaker. Play a test beep.
 5. **Face:** the OLED, seven wires. Draw a face.
-6. **Neck:** the servo. Turn the head left and right.
+6. **Neck:** the servo. Turn the head left and right. Then add servos 2 and 3, one at a time.
 7. **Eyes:** plug in the camera and take a photo.
 8. **Touch:** the copper pad on top of the head, on GPIO 3.
 9. **Brain on your computer:** speech-to-text → AI model → voice, sent back over Wi-Fi.
@@ -163,6 +173,8 @@ Each sketch tests **one** part on its own, so you know it's wired right before y
 | Mouth | `amp_test` | A little rising chirp every 3 seconds |
 | Face | `oled_face` | Two cyan eyes and an orange smile that blink |
 | Neck | `servo_test` | The head slowly looks left and right |
+| Servo 2 | `servo_test2` | The servo on GPIO 46 slowly turns one way and back, then the other way |
+| Servo 3 | `servo_test3` | The servo on GPIO 0 slowly turns one way and back, then the other way |
 | Eyes | `cam_snap` | Send `s` and it returns a photo (`tools/grab_photo.ps1 COM3` saves it on Windows) |
 | Touch | `touch_test` | The reading jumps and it prints "pat!" when you touch the copper |
 

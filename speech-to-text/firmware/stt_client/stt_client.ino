@@ -12,6 +12,8 @@
 // face: it blinks while waiting, opens its eyes wide while listening, looks up while thinking,
 // and moves its mouth with the sound while speaking. The face runs in its own task on core 0,
 // so drawing never interrupts the microphone or the speaker.
+// The three micro servos (same pins and PWM code as firmware/tests/servo_test, servo_test2,
+// servo_test3) are moved to the middle position (90 degrees) at start-up.
 //
 // Board: ESP32S3 Dev Module, Flash 16MB, PSRAM "OPI PSRAM" (needed for the buffers).
 // Core:  esp32 by Espressif 3.x (uses ESP_I2S.h, same as mic_test and amp_test).
@@ -20,6 +22,7 @@
 #include <HTTPClient.h>
 #include <ESP_I2S.h>
 #include <SPI.h>
+#include <esp_system.h>
 
 // Wi-Fi name/password and server URL live in secrets.h (gitignored).
 // First time: copy secrets.example.h to secrets.h and fill in your values.
@@ -29,7 +32,7 @@
 const int PIN_SCK = 42;
 const int PIN_WS  = 41;
 const int PIN_SD  = 1;
-const int PIN_TALK = 0;          // BOOT button, LOW when pressed
+const int PIN_TALK = 0;          // BOOT button, LOW when pressed (shared with servo 3, see below)
 
 const int SAMPLE_RATE = 16000;
 const int MAX_SECONDS = 20;
@@ -240,6 +243,54 @@ void faceTask(void*) {
   }
 }
 
+// ------------------------------------------------------------------ servos
+// Wiring (from the README / servo_test, servo_test2, servo_test3): red -> 5V, brown -> GND,
+// orange -> GPIO 45 (neck), GPIO 46 (servo 2), GPIO 0 (servo 3).
+// No library: a 50 Hz PWM signal where the pulse width (0.5-2.5 ms) sets the angle.
+// Servo 3 shares GPIO 0 with the BOOT button, so while the servos are on, push-to-talk is off
+// (the pin is an output then); hands-free "Happy, ..." still works.
+const bool USE_SERVOS = true;    // false = no servos connected, BOOT push-to-talk works again
+const int  PIN_SERVOS[] = {45, 46, 0};
+const int  NUM_SERVOS   = sizeof(PIN_SERVOS) / sizeof(PIN_SERVOS[0]);
+// Start-up ("home") angle of each servo, same order as PIN_SERVOS. 90 = middle.
+const int  SERVO_HOME[] = {105, 140, 80};
+// true = keep sending the pulse so the servo actively holds its angle (it can buzz/jitter
+// under load); false = stop the pulse once it has arrived, so it goes quiet and is held
+// only by its gears' friction.
+const bool SERVO_HOLD[] = {false, false, false};
+// All directions are from the viewpoint of the robot
+// Servo 1 - right (0) to left (180) 
+// Servo 2 - down (0) and up (180)
+// Servo 3 - bank left (0) to right (180)
+
+void servoWrite(int pin, int deg) {
+  int us = map(deg, 0, 180, 500, 2500);
+  ledcWrite(pin, (uint32_t)us * 16384 / 20000);  // 14-bit duty, 20 ms period
+}
+
+// Moves every servo to its home angle, one at a time, so they don't all pull current at once
+// (that can brown out the board).
+void servosToMiddle() {
+  for (int i = 0; i < NUM_SERVOS; i++) {
+    ledcAttach(PIN_SERVOS[i], 50, 14);
+    servoWrite(PIN_SERVOS[i], SERVO_HOME[i]);
+    delay(400);
+  }
+  delay(400);                    // let the last one arrive
+  for (int i = 0; i < NUM_SERVOS; i++) {
+    if (SERVO_HOLD[i]) continue;
+    ledcDetach(PIN_SERVOS[i]);   // no more pulses: the servo stops correcting (and buzzing)
+    pinMode(PIN_SERVOS[i], OUTPUT);
+    digitalWrite(PIN_SERVOS[i], LOW);  // keep the signal line quiet, not floating
+  }
+  Serial.printf("Servos: home position %d / %d / %d degrees.\n", SERVO_HOME[0], SERVO_HOME[1], SERVO_HOME[2]);
+}
+
+// BOOT button held? Always false while servo 3 owns GPIO 0.
+bool talkPressed() {
+  return !USE_SERVOS && digitalRead(PIN_TALK) == LOW;
+}
+
 void connectWifi() {
   if (WiFi.status() == WL_CONNECTED) return;
   face = FACE_SLEEP;
@@ -299,7 +350,7 @@ size_t recordWhileHeld() {
   float level;
   face = FACE_LISTEN;
   flushMic(100);                 // let the mic settle
-  while (digitalRead(PIN_TALK) == LOW && n < MAX_SAMPLES) {
+  while (talkPressed() && n < MAX_SAMPLES) {
     size_t got = readBlock(block, level);
     for (size_t i = 0; i < got && n < MAX_SAMPLES; i++) pcm[n++] = block[i];
   }
@@ -319,7 +370,7 @@ size_t listenForSpeech() {
 
   // 1. wait for a few loud blocks in a row
   while (true) {
-    if (digitalRead(PIN_TALK) == LOW) return 0;
+    if (talkPressed()) return 0;
     size_t got = readBlock(block, level);
     for (size_t i = 0; i < got; i++) {
       preroll[head] = block[i];
@@ -457,7 +508,10 @@ bool talkToHappy(size_t samples, bool needName) {
 void setup() {
   Serial.begin(115200);
   delay(500);
-  pinMode(PIN_TALK, INPUT_PULLUP);
+  esp_reset_reason_t why = esp_reset_reason();
+  if (why == ESP_RST_BROWNOUT) Serial.println("Started after a BROWN-OUT: the servos or the speaker pulled the power down!");
+  if (USE_SERVOS) servosToMiddle();
+  else            pinMode(PIN_TALK, INPUT_PULLUP);
   if (SHOW_FACE) xTaskCreatePinnedToCore(faceTask, "face", 4096, nullptr, 1, nullptr, 0);
 
   pcm = (int16_t*)ps_malloc(MAX_SAMPLES * sizeof(int16_t));
@@ -474,7 +528,8 @@ void setup() {
   }
 
   connectWifi();
-  if (HANDS_FREE) Serial.println("Ready. Say \"Happy, ...\" (or hold BOOT, talk, release).");
+  if (USE_SERVOS) Serial.println("Ready. Say \"Happy, ...\" (BOOT push-to-talk is off: servo 3 uses GPIO 0).");
+  else if (HANDS_FREE) Serial.println("Ready. Say \"Happy, ...\" (or hold BOOT, talk, release).");
   else            Serial.println("Ready. Hold BOOT, talk, release.");
 }
 
@@ -482,10 +537,10 @@ void loop() {
   size_t n = 0;
   bool needName = false;
 
-  if (digitalRead(PIN_TALK) == LOW) {                 // push-to-talk: no name needed
+  if (talkPressed()) {                 // push-to-talk: no name needed
     Serial.println("Listening...");
     n = recordWhileHeld();
-    while (digitalRead(PIN_TALK) == LOW) delay(10);   // wait for release
+    while (talkPressed()) delay(10);   // wait for release
     if (n < SAMPLE_RATE / 4) { Serial.println("Too short, ignored."); face = FACE_IDLE; return; }
   } else if (HANDS_FREE) {
     n = listenForSpeech();
