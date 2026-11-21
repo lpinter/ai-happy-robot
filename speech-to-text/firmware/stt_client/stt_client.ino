@@ -13,7 +13,9 @@
 // and moves its mouth with the sound while speaking. The face runs in its own task on core 0,
 // so drawing never interrupts the microphone or the speaker.
 // The three micro servos (same pins and PWM code as firmware/tests/servo_test, servo_test2,
-// servo_test3) are moved to the middle position (90 degrees) at start-up.
+// servo_test3) go to their home position at start-up. Then a neck task (also on core 0) keeps
+// the head gently alive: slow drift and breathing, the odd glance around, a curious head tilt
+// while listening, looking up while thinking, small nods while speaking, and drooping when sad.
 //
 // Board: ESP32S3 Dev Module, Flash 16MB, PSRAM "OPI PSRAM" (needed for the buffers).
 // Core:  esp32 by Espressif 3.x (uses ESP_I2S.h, same as mic_test and amp_test).
@@ -263,9 +265,24 @@ const bool SERVO_HOLD[] = {false, false, false};
 // Servo 2 - down (0) and up (180)
 // Servo 3 - bank left (0) to right (180)
 
+// Neck animation (see neckTask). While it runs, the servos keep getting pulses (SERVO_HOLD is ignored).
+const bool  ANIMATE_NECK = true;     // false = the servos go home at start-up and stay there
+const float NECK_RANGE[] = {30, 20, 15};  // how far (degrees) each servo may move away from home, either way
+const float DRIFT_SCALE  = 1.0f;     // idle sway / breathing: 0 = none, 1 = normal, 2 = twice as much
+const bool  IDLE_GLANCES = true;     // look around now and then (gear noise can wake the mic; false = calmer)
+const float SPEAK_NOD    = 8.0f;     // how strongly the head nods with the speech (0 = no nodding)
+const float MAX_SPEED    = 60.0f;    // degrees per second, never faster (gentler on the power supply too)
+
 void servoWrite(int pin, int deg) {
   int us = map(deg, 0, 180, 500, 2500);
   ledcWrite(pin, (uint32_t)us * 16384 / 20000);  // 14-bit duty, 20 ms period
+}
+
+// Same, but with fractions of a degree (1 duty step = ~1.2 us = ~0.1 degree), so slow moves glide
+// instead of stepping a whole degree at a time.
+void servoWriteF(int pin, float deg) {
+  float us = 500.0f + constrain(deg, 0.0f, 180.0f) * (2000.0f / 180.0f);
+  ledcWrite(pin, (uint32_t)(us * 16384.0f / 20000.0f + 0.5f));
 }
 
 // Moves every servo to its home angle, one at a time, so they don't all pull current at once
@@ -278,12 +295,98 @@ void servosToMiddle() {
   }
   delay(400);                    // let the last one arrive
   for (int i = 0; i < NUM_SERVOS; i++) {
-    if (SERVO_HOLD[i]) continue;
+    if (SERVO_HOLD[i] || ANIMATE_NECK) continue;
     ledcDetach(PIN_SERVOS[i]);   // no more pulses: the servo stops correcting (and buzzing)
     pinMode(PIN_SERVOS[i], OUTPUT);
     digitalWrite(PIN_SERVOS[i], LOW);  // keep the signal line quiet, not floating
   }
   Serial.printf("Servos: home position %d / %d / %d degrees.\n", SERVO_HOME[0], SERVO_HOME[1], SERVO_HOME[2]);
+}
+
+// Slow, never-repeating sway for one axis (0 = turn, 1 = nod, 2 = tilt), in degrees.
+// Sine waves whose periods don't divide into each other, so the pattern never visibly loops.
+// The nod has a ~4 s wave in it: that reads as breathing.
+float neckDrift(int axis, float t) {
+  switch (axis) {
+    case 0:  return 2.5f * sinf(t * 0.83f)        + 1.2f * sinf(t * 2.03f + 1.3f);
+    case 1:  return 1.0f * sinf(t * 1.57f)        + 1.0f * sinf(t * 0.61f + 0.7f);
+    default: return 1.2f * sinf(t * 0.47f + 2.1f) + 0.5f * sinf(t * 1.31f);
+  }
+}
+
+// Runs on core 0 at 50 Hz and moves the head to fit the face:
+//   goal = home + pose for the current face + glance + speech nod + drift (limited to NECK_RANGE)
+// The position follows the goal through two smoothing stages, so every move starts and stops
+// gently (an S-curve) instead of jumping. Offsets below: turn + = left, nod + = up, tilt + = right.
+void neckTask(void*) {
+  float pos[3], mid[3];                    // smoothed position, and the stage before it
+  for (int i = 0; i < NUM_SERVOS; i++) pos[i] = mid[i] = SERVO_HOME[i];
+  float glance[3] = {0, 0, 0};
+  unsigned long nextGlance = millis() + random(3000, 8000), glanceEnd = 0;
+  float talk = 0, talkSlow = 0;            // speech loudness: quick and slow follower
+  int side = 1;                            // which way to tilt this time (-1 / +1)
+  int last = -1;
+  const float maxStep = MAX_SPEED * 0.02f;
+  TickType_t wake = xTaskGetTickCount();
+
+  while (true) {
+    Face f = face;
+    unsigned long now = millis();
+    float t = now / 1000.0f;
+
+    if (f != last) {                       // a new face: pick a side, forget the old glance
+      side = random(2) ? 1 : -1;
+      for (int i = 0; i < 3; i++) glance[i] = 0;
+      glanceEnd = 0;
+      nextGlance = now + random(2000, 6000);
+      last = f;
+    }
+
+    float pose[3] = {0, 0, 0};
+    float k = 0.06f;                       // smoothing per stage: bigger = quicker moves
+    float drift = 1.0f;                    // how much idle sway in this state
+    switch (f) {
+      case FACE_SLEEP:  pose[1] = -12;                               k = 0.025f; drift = 0.3f; break;
+      case FACE_IDLE:                                                k = 0.07f;                break;
+      case FACE_LISTEN: pose[1] = -3;  pose[2] = 8 * side;           k = 0.05f;  drift = 0.3f; break;  // curious tilt, keep quiet for the mic
+      case FACE_THINK:  pose[0] = 8;   pose[1] = 10; pose[2] = -3;   k = 0.05f;  drift = 0.6f; break;  // up and to the side, like the eyes
+      case FACE_SPEAK:                                                           drift = 0.8f; break;
+      case FACE_SAD:    pose[1] = -14; pose[2] = -6 * side;          k = 0.04f;  drift = 0.4f; break;
+    }
+
+    // speaking: nod on the stressed syllables (loudness above its own average) and sway a little
+    talk += (mouthOpen - talk) * 0.08f;
+    talkSlow += (talk - talkSlow) * 0.02f;
+    float speech[3] = {0, 0, 0};
+    if (f == FACE_SPEAK) {
+      speech[1] = SPEAK_NOD * (talk - talkSlow);
+      speech[0] = 3.0f * sinf(t * 0.9f);
+    }
+
+    // glances: now and then look somewhere else for a moment, sometimes chaining a few
+    if (IDLE_GLANCES && (f == FACE_IDLE || f == FACE_SPEAK)) {
+      float s = f == FACE_SPEAK ? 0.5f : 1.0f;     // smaller while talking
+      if (glanceEnd && now >= glanceEnd) {
+        glanceEnd = 0;
+        if (random(100) < 35) nextGlance = now;    // look somewhere else straight away
+        else { for (int i = 0; i < 3; i++) glance[i] = 0; nextGlance = now + random(3000, 9000); }
+      } else if (!glanceEnd && now >= nextGlance) {
+        glance[0] = random(-15, 16) * s;
+        glance[1] = random(-4, 6) * s;
+        glance[2] = random(3) == 0 ? random(-6, 7) * s : 0;   // sometimes a curious tilt too
+        glanceEnd = now + random(800, 2500);
+      }
+    }
+
+    for (int i = 0; i < NUM_SERVOS; i++) {
+      float off = pose[i] + glance[i] + speech[i] + neckDrift(i, t) * drift * DRIFT_SCALE;
+      float goal = SERVO_HOME[i] + constrain(off, -NECK_RANGE[i], NECK_RANGE[i]);
+      mid[i] += (goal - mid[i]) * k;
+      pos[i] += constrain((mid[i] - pos[i]) * k * 1.5f, -maxStep, maxStep);
+      servoWriteF(PIN_SERVOS[i], pos[i]);
+    }
+    vTaskDelayUntil(&wake, pdMS_TO_TICKS(20));     // one servo frame
+  }
 }
 
 // BOOT button held? Always false while servo 3 owns GPIO 0.
@@ -512,6 +615,7 @@ void setup() {
   if (why == ESP_RST_BROWNOUT) Serial.println("Started after a BROWN-OUT: the servos or the speaker pulled the power down!");
   if (USE_SERVOS) servosToMiddle();
   else            pinMode(PIN_TALK, INPUT_PULLUP);
+  if (USE_SERVOS && ANIMATE_NECK) xTaskCreatePinnedToCore(neckTask, "neck", 4096, nullptr, 2, nullptr, 0);
   if (SHOW_FACE) xTaskCreatePinnedToCore(faceTask, "face", 4096, nullptr, 1, nullptr, 0);
 
   pcm = (int16_t*)ps_malloc(MAX_SAMPLES * sizeof(int16_t));
