@@ -40,7 +40,7 @@ Run all commands in **PowerShell** (Start menu → "PowerShell"), not in the old
   At minimum you need the ESP32-S3, the INMP441 mic and the MAX98357A amp with a speaker.
 - A Windows PC with an Nvidia graphics card. It also works without one, just much slower.
 - LM Studio with the Gemma model downloaded (see pinter.org/archives/17888 and /18014).
-- Arduino IDE with the "esp32 by Espressif Systems" boards package, version 3.x.
+- Arduino IDE with the "esp32 by Espressif Systems" boards package, version 4.0.0 or newer.
 - The PC and the ESP32 on the **same Wi-Fi network**.
 
 ---

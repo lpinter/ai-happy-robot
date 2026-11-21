@@ -179,8 +179,9 @@ Each sketch tests **one** part on its own, so you know it's wired right before y
 | Touch | `touch_test` | The reading jumps and it prints "pat!" when you touch the copper |
 
 **How to upload (Arduino IDE)**
-1. Install the **esp32** boards package by Espressif (version 3.x) from the Boards Manager. No other libraries are needed.
+1. Install the **esp32** boards package by Espressif (version 4.0.0 or newer) from the Boards Manager. No other libraries are needed.
 2. Board: **ESP32S3 Dev Module**. Flash size: **16MB**. PSRAM: **OPI PSRAM** (the camera needs it).
+   Shortcut: run `python tools/make_happy_board.py` once (and again after each esp32 core update), restart the IDE, and pick **ESP32S3 N16R8 (Happy Robot)**. That board starts with these settings already chosen.
 3. Plug the USB-C into the board's **TTL** port, pick that port, then Upload.
 4. Open the Serial Monitor at **115200** baud.
 
