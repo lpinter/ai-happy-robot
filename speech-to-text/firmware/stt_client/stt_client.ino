@@ -8,6 +8,8 @@
 // the PC's stt_server.py /talk. The PC runs Whisper -> Gemma -> Kokoro and sends
 // back Happy's spoken answer, which plays on the MAX98357A (same pins as amp_test).
 // What you said and Happy's answer are also printed on the Serial Monitor (115200).
+// No router? After ROUTER_WAIT_MS Happy starts its own Wi-Fi network (AP_SSID). Join it from
+// the PC and Happy talks to that PC directly; everything runs on the PC, so no internet is needed.
 // The 1.5" SSD1351 OLED (same pins and driver code as firmware/tests/oled_face) shows Happy's
 // face: it blinks while waiting, opens its eyes wide while listening, looks up while thinking,
 // and moves its mouth with the sound while speaking. The face runs in its own task on core 0,
@@ -29,6 +31,16 @@
 // Wi-Fi name/password and server URL live in secrets.h (gitignored).
 // First time: copy secrets.example.h to secrets.h and fill in your values.
 #include "secrets.h"
+
+// Happy's own Wi-Fi network, used when the router can't be reached (see startAccessPoint).
+// Set these in secrets.h to change them. The password needs at least 8 characters.
+#ifndef AP_SSID
+#define AP_SSID "Happy-Robot"
+#endif
+#ifndef AP_PASS
+#define AP_PASS "happy1234"
+#endif
+const unsigned long ROUTER_WAIT_MS = 20000;   // how long to try the router before making Happy's own network
 
 // INMP441 wiring (from the README / mic_test)
 const int PIN_SCK = 42;
@@ -472,26 +484,71 @@ bool talkPressed() {
   return !USE_SERVOS && digitalRead(PIN_TALK) == LOW;
 }
 
+// Access point mode: when the router can't be reached, Happy makes its own Wi-Fi network.
+// Join it from the PC; the PC gets an address from Happy (e.g. 192.168.4.2), and Happy sends
+// its recordings to that address, using the port and path from STT_URL.
+// Restart Happy to go back to the router.
+volatile bool apMode = false;
+volatile uint32_t apClientIp = 0;   // the last computer that joined Happy's network (0 = none yet)
+
+void onApEvent(arduino_event_id_t event, arduino_event_info_t info) {
+  if (event == ARDUINO_EVENT_WIFI_AP_STAIPASSIGNED) {
+    apClientIp = info.wifi_ap_staipassigned.ip.addr;
+    Serial.printf("Wi-Fi: a computer joined Happy's network, IP %s\n", IPAddress(apClientIp).toString().c_str());
+  } else if (event == ARDUINO_EVENT_WIFI_AP_STADISCONNECTED && WiFi.softAPgetStationNum() == 0) {
+    apClientIp = 0;
+    Serial.println("Wi-Fi: the computer left Happy's network");
+  }
+}
+
+void startAccessPoint() {
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_AP);
+  WiFi.setSleep(false);
+  if (!WiFi.softAP(AP_SSID, AP_PASS)) {
+    Serial.println("Wi-Fi: could not start Happy's own network (the password must be 8+ characters)");
+    return;
+  }
+  apMode = true;
+  Serial.printf("Wi-Fi: started Happy's own network \"%s\" (password \"%s\"), Happy's IP %s\n",
+                AP_SSID, AP_PASS, WiFi.softAPIP().toString().c_str());
+  Serial.println("Wi-Fi: join it from the PC and run stt_server.py there.");
+}
+
+// The address to send recordings to: STT_URL as it is, or in access point mode,
+// STT_URL with the host swapped for the PC that joined Happy's network.
+String serverUrl() {
+  if (!apMode) return STT_URL;
+  String url = STT_URL;
+  int hostStart = url.indexOf("://");
+  hostStart = hostStart < 0 ? 0 : hostStart + 3;
+  int hostEnd = hostStart;
+  while (hostEnd < (int)url.length() && url[hostEnd] != ':' && url[hostEnd] != '/') hostEnd++;
+  return url.substring(0, hostStart) + IPAddress(apClientIp).toString() + url.substring(hostEnd);
+}
+
+// Joins the router. If that doesn't work within ROUTER_WAIT_MS, Happy starts its own network.
 void connectWifi() {
-  if (WiFi.status() == WL_CONNECTED) return;
+  if (apMode || WiFi.status() == WL_CONNECTED) return;
   face = FACE_SLEEP;
   Serial.printf("Wi-Fi: connecting to %s", WIFI_SSID);
+  static bool eventsHooked = false;
+  if (!eventsHooked) { WiFi.onEvent(onApEvent); eventsHooked = true; }
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   unsigned long t0 = millis();
   while (WiFi.status() != WL_CONNECTED) {
     delay(300); Serial.print(".");
-    if (millis() - t0 > 15000) {   // stuck: say why, then try again
+    if (millis() - t0 > ROUTER_WAIT_MS) {
       wl_status_t st = WiFi.status();
-      Serial.printf("\nWi-Fi: not connected (status %d: %s). Retrying...\n", st,
+      Serial.printf("\nWi-Fi: not connected (status %d: %s).\n", st,
         st == WL_NO_SSID_AVAIL  ? "network not found - check the name, and that it is 2.4 GHz" :
         st == WL_CONNECT_FAILED ? "connect failed - check the password" :
                                   "no answer from the router - wrong password or WPA3-only network?");
-      WiFi.disconnect();
-      delay(500);
-      WiFi.begin(WIFI_SSID, WIFI_PASS);
-      t0 = millis();
+      startAccessPoint();
+      face = FACE_IDLE;
+      return;
     }
   }
   Serial.printf("\nWi-Fi: connected, IP %s\n", WiFi.localIP().toString().c_str());
@@ -639,10 +696,17 @@ void playReply(size_t bytes) {
 // Returns true if Happy answered.
 bool talkToHappy(size_t samples, bool needName) {
   connectWifi();
+  if (apMode && apClientIp == 0) {
+    Serial.printf("No computer has joined \"%s\" yet - nobody to send this to.\n", AP_SSID);
+    face = FACE_SAD;
+    delay(1500);
+    face = FACE_IDLE;
+    return false;
+  }
   face = FACE_THINK;
   HTTPClient http;
   http.setTimeout(60000);        // Whisper + Gemma + Kokoro; the first request after a restart is slower
-  http.begin(STT_URL);
+  http.begin(serverUrl());
   http.addHeader("Content-Type", "application/octet-stream");
   http.addHeader("X-Happy-Wake", needName ? "1" : "0");
   const char* keys[] = {"X-Happy-Text", "X-Happy-Reply", "X-Happy-Ignored", "X-Happy-Head"};

@@ -257,6 +257,23 @@ Wi-Fi: connected, IP 192.168.1.xx
 Ready. Say "Happy, ..." (or hold BOOT, talk, release).
 ```
 
+### No Wi-Fi router? Happy makes its own network
+
+If Happy can't reach the router within 20 seconds, it starts its own Wi-Fi network:
+```
+Wi-Fi: not connected (status 1: network not found - check the name, and that it is 2.4 GHz).
+Wi-Fi: started Happy's own network "Happy-Robot" (password "happy1234"), Happy's IP 192.168.4.1
+```
+1. On the PC, join the **Happy-Robot** Wi-Fi network (password `happy1234`). Windows warns
+   "No internet". That's fine: Whisper, LM Studio and Kokoro all run on the PC.
+2. Make sure `stt_server.py` is running (it already listens on all networks).
+3. The Serial Monitor shows `Wi-Fi: a computer joined Happy's network, IP 192.168.4.2`. From then
+   on Happy sends to that address, using the port and path from `STT_URL`. You don't need to edit it.
+
+To change the network name or password, add `AP_SSID` and `AP_PASS` to `secrets.h` (see
+`secrets.example.h`). The password needs at least 8 characters. Happy stays on its own network
+until it restarts. Press **RST** to try the router again.
+
 ## Step 9: Talk to Happy
 
 Just talk: say something like "Hello Happy, what's your favorite color?" Happy starts recording
@@ -389,6 +406,9 @@ powershell -ExecutionPolicy Bypass -File install_autostart.ps1 -Uninstall
 | ESP32: `HTTP error -1` (connection refused) | Wrong PC IP in `STT_URL`, the firewall rule from Step 7 is missing, or the server isn't running |
 | ESP32: `HTTP error -11` (read timeout) | The PC is too slow or the model is still loading. Try again, or use `--model base.en` |
 | ESP32 stuck on `Wi-Fi: connecting....` | Wrong Wi-Fi name or password, or a 5 GHz-only network |
+| ESP32 starts `Happy-Robot` although the router is on | Same as above: it couldn't join the router within 20 s. Fix `secrets.h` and press RST |
+| `No computer has joined "Happy-Robot" yet` | Join the Happy-Robot Wi-Fi from the PC first |
+| On Happy-Robot: `HTTP error -1` | The firewall rule from Step 7 is missing, or the server isn't running |
 | `No PSRAM!` | Tools → PSRAM → **OPI PSRAM**, then upload again |
 | `You:` is empty / `peak` near 0 | Mic wiring (SD on GPIO 1, L/R to GND) or set `MIC_SLOT = 1` |
 | Whisper gets the words wrong | Play `last_recording.wav` and tune `GAIN_SHIFT`; speak 20–30 cm from the mic; try `--model turbo` |
