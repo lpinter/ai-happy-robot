@@ -269,9 +269,63 @@ const bool SERVO_HOLD[] = {false, false, false};
 const bool  ANIMATE_NECK = true;     // false = the servos go home at start-up and stay there
 const float NECK_RANGE[] = {30, 20, 15};  // how far (degrees) each servo may move away from home, either way
 const float DRIFT_SCALE  = 1.0f;     // idle sway / breathing: 0 = none, 1 = normal, 2 = twice as much
-const bool  IDLE_GLANCES = true;     // look around now and then (gear noise can wake the mic; false = calmer)
+const bool  IDLE_GLANCES = false;     // look around now and then (gear noise can wake the mic; false = calmer)
 const float SPEAK_NOD    = 8.0f;     // how strongly the head nods with the speech (0 = no nodding)
 const float MAX_SPEED    = 60.0f;    // degrees per second, never faster (gentler on the power supply too)
+
+// Head moves the AI asks for ("Happy, turn your head left and right", "look up and down", "tilt
+// your head"): the server sends them in X-Happy-Head, e.g. "left,up,tilt left,center", and neckTask
+// plays them on servo 1 (left/right), servo 2 (up/down) and servo 3 (tilt) while Happy speaks.
+const float HEAD_TURN = 25.0f;       // degrees for "left" / "right"           (stays within NECK_RANGE[0])
+const float HEAD_LIFT = 18.0f;       // degrees for "up" / "down"              (stays within NECK_RANGE[1])
+const float HEAD_TILT = 14.0f;       // degrees for "tilt left" / "tilt right" (stays within NECK_RANGE[2])
+struct HeadStep { float pan, nod, roll; uint16_t ms; float k; };   // where to look, for how long, how quickly
+const int MAX_HEAD_STEPS = 32;
+HeadStep headSteps[MAX_HEAD_STEPS];  // filled by the main loop, taken by neckTask
+volatile int  headCount = 0;
+volatile bool headNew = false;
+portMUX_TYPE headMux = portMUX_INITIALIZER_UNLOCKED;
+
+// Turns "left,up,tilt left,center" into steps for neckTask. Each move changes only its own
+// direction, so "up,left" ends up looking up and to the left; "center" brings everything back.
+// Unknown words are skipped.
+void queueHeadMoves(const String& moves) {
+  HeadStep s[MAX_HEAD_STEPS];
+  int n = 0;
+  float pan = 0, nod = 0, roll = 0;      // where the head is after the previous step
+  auto add = [&](float p, float d, float r, uint16_t ms, float k) {
+    if (n < MAX_HEAD_STEPS) s[n++] = {p, d, r, ms, k};
+  };
+  for (int start = 0; start < (int)moves.length();) {
+    int comma = moves.indexOf(',', start);
+    if (comma < 0) comma = moves.length();
+    String m = moves.substring(start, comma);
+    m.trim();
+    start = comma + 1;
+    if      (m == "left")       { pan  =  HEAD_TURN; add(pan, nod, roll, 1300, 0.07f); }
+    else if (m == "right")      { pan  = -HEAD_TURN; add(pan, nod, roll, 1300, 0.07f); }
+    else if (m == "up")         { nod  =  HEAD_LIFT; add(pan, nod, roll, 1300, 0.07f); }
+    else if (m == "down")       { nod  = -HEAD_LIFT; add(pan, nod, roll, 1300, 0.07f); }
+    else if (m == "tilt left")  { roll = -HEAD_TILT; add(pan, nod, roll, 1300, 0.07f); }  // servo 3: 0 = bank left
+    else if (m == "tilt right") { roll =  HEAD_TILT; add(pan, nod, roll, 1300, 0.07f); }
+    else if (m == "center")     { pan = nod = roll = 0; add(pan, nod, roll, 1000, 0.07f); }
+    else if (m == "shake") {             // a quick "no-no"
+      for (int i = 0; i < 2; i++) { add(pan + 10, nod, roll, 350, 0.15f); add(pan - 10, nod, roll, 350, 0.15f); }
+      add(pan, nod, roll, 500, 0.1f);
+    } else if (m == "nod") {             // a quick "yes-yes"
+      for (int i = 0; i < 2; i++) { add(pan, nod - 10, roll, 350, 0.15f); add(pan, nod + 3, roll, 350, 0.15f); }
+      add(pan, nod, roll, 500, 0.1f);
+    }
+  }
+  if (n == 0) return;
+  const HeadStep& end = s[n - 1];
+  if (end.pan != 0 || end.nod != 0 || end.roll != 0) s[n - 1].ms += 1500;   // left looking somewhere: stay a bit longer
+  portENTER_CRITICAL(&headMux);
+  memcpy(headSteps, s, n * sizeof(HeadStep));
+  headCount = n;
+  headNew = true;
+  portEXIT_CRITICAL(&headMux);
+}
 
 void servoWrite(int pin, int deg) {
   int us = map(deg, 0, 180, 500, 2500);
@@ -326,6 +380,9 @@ void neckTask(void*) {
   float talk = 0, talkSlow = 0;            // speech loudness: quick and slow follower
   int side = 1;                            // which way to tilt this time (-1 / +1)
   int last = -1;
+  HeadStep cmd[MAX_HEAD_STEPS];            // head moves the AI asked for (all three servos)
+  int cmdN = 0, cmdI = 0;
+  unsigned long cmdEnd = 0;
   const float maxStep = MAX_SPEED * 0.02f;
   TickType_t wake = xTaskGetTickCount();
 
@@ -378,11 +435,32 @@ void neckTask(void*) {
       }
     }
 
+    // asked to move the head: these moves take over the servos until they're done
+    if (headNew) {
+      portENTER_CRITICAL(&headMux);
+      cmdN = headCount;
+      memcpy(cmd, headSteps, cmdN * sizeof(HeadStep));
+      headNew = false;
+      portEXIT_CRITICAL(&headMux);
+      cmdI = -1;
+      cmdEnd = 0;
+    }
+    if (cmdN && now >= cmdEnd) {
+      if (++cmdI < cmdN) cmdEnd = now + cmd[cmdI].ms;
+      else cmdN = 0;                       // done: back to the normal behaviour
+    }
+
     for (int i = 0; i < NUM_SERVOS; i++) {
       float off = pose[i] + glance[i] + speech[i] + neckDrift(i, t) * drift * DRIFT_SCALE;
+      float ki = k;
+      if (cmdN) {                          // servo 1 = turn, servo 2 = nod, servo 3 = tilt
+        float want = i == 0 ? cmd[cmdI].pan : i == 1 ? cmd[cmdI].nod : cmd[cmdI].roll;
+        off = want + neckDrift(i, t) * 0.3f;
+        ki = cmd[cmdI].k;
+      }
       float goal = SERVO_HOME[i] + constrain(off, -NECK_RANGE[i], NECK_RANGE[i]);
-      mid[i] += (goal - mid[i]) * k;
-      pos[i] += constrain((mid[i] - pos[i]) * k * 1.5f, -maxStep, maxStep);
+      mid[i] += (goal - mid[i]) * ki;
+      pos[i] += constrain((mid[i] - pos[i]) * ki * 1.5f, -maxStep, maxStep);
       servoWriteF(PIN_SERVOS[i], pos[i]);
     }
     vTaskDelayUntil(&wake, pdMS_TO_TICKS(20));     // one servo frame
@@ -567,8 +645,8 @@ bool talkToHappy(size_t samples, bool needName) {
   http.begin(STT_URL);
   http.addHeader("Content-Type", "application/octet-stream");
   http.addHeader("X-Happy-Wake", needName ? "1" : "0");
-  const char* keys[] = {"X-Happy-Text", "X-Happy-Reply", "X-Happy-Ignored"};
-  http.collectHeaders(keys, 3);
+  const char* keys[] = {"X-Happy-Text", "X-Happy-Reply", "X-Happy-Ignored", "X-Happy-Head"};
+  http.collectHeaders(keys, 4);
 
   int code = http.POST((uint8_t*)pcm, samples * sizeof(int16_t));
   if (code != 200) {
@@ -587,6 +665,8 @@ bool talkToHappy(size_t samples, bool needName) {
     return false;
   }
   Serial.printf("Happy: %s\n", urlDecode(http.header("X-Happy-Reply")).c_str());
+  String head = http.header("X-Happy-Head");
+  if (head.length()) Serial.printf("Head:  %s\n", head.c_str());
 
   // download the whole answer first, then play it (no gaps if Wi-Fi stutters)
   int len = http.getSize();
@@ -602,6 +682,7 @@ bool talkToHappy(size_t samples, bool needName) {
   }
   http.end();
   Serial.printf("Speaking %.1f s...\n", got / 2.0f / SAMPLE_RATE);
+  if (USE_SERVOS && ANIMATE_NECK && head.length()) queueHeadMoves(head);   // turn while speaking
   face = FACE_SPEAK;
   playReply(got);
   face = FACE_IDLE;

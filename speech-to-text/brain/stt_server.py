@@ -6,7 +6,8 @@ Happy's "ears + brain + voice" on the PC.
 Endpoints:
   POST /talk  audio in -> Happy's spoken answer out (what the ESP32 uses)
                 response body: raw PCM, 16 kHz, 16-bit LE, mono
-                headers: X-Happy-Text (what you said), X-Happy-Reply (the answer), both URL-encoded
+                headers: X-Happy-Text (what you said), X-Happy-Reply (the answer), both URL-encoded,
+                X-Happy-Head (head moves, e.g. "left,right,center"; empty = none)
                 request header X-Happy-Wake: 1 -> only answer if the text contains a wake word
                 (hands-free mode); otherwise the response is empty with X-Happy-Ignored: 1
   POST /stt   audio in -> JSON {"text": ..., "reply": ...}  (no speech, handy for debugging)
@@ -19,6 +20,11 @@ Endpoints:
 Long-term memory: when Happy learns something worth keeping it adds [REMEMBER: ...] to its answer;
 the server strips the tag, appends the fact to memory.md, and puts memory.md into the system prompt
 on every request. Edit or delete lines in memory.md by hand any time.
+
+Head moves: when asked to turn its head, Happy adds [HEAD: left, right, center] to its answer; the
+server strips the tag and sends the moves to the ESP32 in X-Happy-Head, which moves servo 1
+(left/right), servo 2 (up/down) and servo 3 (tilt) while Happy speaks.
+Moves: left, right, up, down, tilt left, tilt right, center, shake, nod (directions are Happy's own).
 
 Audio in (/talk and /stt):
   * Content-Type: application/octet-stream -> raw PCM, 16 kHz, 16-bit LE, mono (ESP32)
@@ -79,8 +85,81 @@ The tag is removed before you speak, so never mention it.
 What you remember from earlier conversations:
 {memories}"""
 
+HEAD_RULES = """
+
+## Your head (IMPORTANT)
+You have real neck motors that turn your head to your own left and right, tip it up and down, and
+tilt it sideways (ear towards your shoulder). Saying that you move is NOT enough: your head only
+moves if your answer ends with a head tag. So whenever the person asks you to turn, look, move,
+tilt, nod or shake your head, your answer MUST end with ONE line like this:
+[HEAD: left, right, center]
+List the moves in order, separated by commas. Moves: left, right, up, down, tilt left, tilt right,
+center, shake (no), nod (yes). "left" and "right" turn your head; "tilt left" and "tilt right" lean it.
+Left and right are YOUR left and right. End with center unless they asked you to keep looking somewhere.
+This tag is the one exception to the rule about special symbols: it is removed before you speak.
+Never mention the tag, and only move your head when asked.
+
+Example:
+Person: Happy, turn your head left and right.
+You: Sure, watch this! Did you see me look around?
+[HEAD: left, right, center]
+Person: Happy, look up and down.
+You: Up to the sky, down to the desk! What should I look at next?
+[HEAD: up, down, center]
+Person: Happy, tilt your head left and right.
+You: Like a curious puppy! Do I look cute?
+[HEAD: tilt left, tilt right, center]"""
+
 REMEMBER_TAG = re.compile(r"\[\s*REMEMBER\s*:\s*(.*?)\s*\]", re.I | re.S)
-UNCLOSED_TAG = re.compile(r"\[\s*REMEMBER\b.*$", re.I | re.S)   # cut off by max_tokens
+HEAD_TAG = re.compile(r"\[\s*HEAD\s*:\s*(.*?)\s*\]", re.I | re.S)
+UNCLOSED_TAG = re.compile(r"\[\s*(REMEMBER|HEAD)\b.*$", re.I | re.S)   # cut off by max_tokens
+HEAD_MOVES = {"left": "left", "right": "right", "up": "up", "upward": "up", "upwards": "up",
+              "down": "down", "downward": "down", "downwards": "down",
+              "center": "center", "centre": "center", "middle": "center", "forward": "center",
+              "straight": "center", "shake": "shake", "nod": "nod"}
+TILT_WORDS = {"tilt", "tilted", "lean", "bank", "cock", "tip"}   # with left/right: lean, don't turn
+MAX_HEAD_MOVES = 6   # the ESP32 has room for this many, even if they're all shakes or nods
+
+
+def to_moves(words: list) -> list:
+    """Words -> moves. If a tilt word is among them, left/right become "tilt left"/"tilt right"."""
+    tilt = bool(TILT_WORDS & set(words))
+    moves = [HEAD_MOVES[w] for w in words if w in HEAD_MOVES]
+    moves = [f"tilt {m}" if tilt and m in ("left", "right") else m for m in moves]
+    if tilt and not moves:
+        moves = ["tilt right"]           # just "tilt": the curious-puppy side
+    return moves
+
+
+def head_moves(tags: list) -> list:
+    """The valid moves from the [HEAD: ...] tags, in order, e.g. ["left", "tilt right", "center"]."""
+    moves = []
+    for item in ",".join(tags).lower().split(","):   # each comma-separated item on its own,
+        moves += to_moves(re.findall(r"[a-z]+", item))  # so "tilt left, right" = tilt, then turn
+    return moves[:MAX_HEAD_MOVES]
+
+
+# "turn/move/shake/nod/tilt your head ...", "nod", or "look left / look to the right / look up / look around"
+HEAD_REQUEST = re.compile(r"\b(turn|move|shake|nod|rotate|tilt|tip|lean|cock)\b.*\bhead\b"
+                          r"|\bhead\b.*\b(left|right|up|down|around)\b|\bnod\b"
+                          r"|\blook\s+(to\s+(the|your)\s+)?(left|right|up|down|around)\b", re.I | re.S)
+
+
+def head_moves_from_request(text: str) -> list:
+    """Backup for when the model forgets the tag: "turn your head left and right" -> left, right, center."""
+    if not HEAD_REQUEST.search(text):
+        return []
+    words = re.findall(r"[a-z]+", text.lower())
+    if "shake" in words:
+        return ["shake"]
+    if "nod" in words:
+        return ["nod"]
+    moves = [m for m in to_moves(words) if m not in ("shake", "nod")]
+    if not moves:
+        return ["left", "right", "center"]   # "look around", "move your head"
+    if len(moves) > 1 and moves[-1] != "center":
+        moves.append("center")   # "left and right" -> come back to the middle afterwards
+    return moves[:MAX_HEAD_MOVES]
 
 
 # ---------------------------------------------------------------- audio helpers
@@ -182,11 +261,12 @@ def remember(facts: list) -> list:
 
 
 def system_prompt() -> str:
+    prompt = personality + ("" if args.no_head else HEAD_RULES)
     if not args.memory:
-        return personality
+        return prompt
     memories = read_memories()
     listed = "\n".join(f"- {m}" for m in memories) if memories else "(nothing yet)"
-    return personality + MEMORY_RULES.format(memories=listed)
+    return prompt + MEMORY_RULES.format(memories=listed)
 
 
 # ---------------------------------------------------------------- the brain (LM Studio)
@@ -215,14 +295,24 @@ def ask_llm(text: str) -> dict:
                                           "Is the server running? (lms server start)"}
     raw = (data["choices"][0]["message"].get("content") or "").strip()
     facts = REMEMBER_TAG.findall(raw)
-    reply = UNCLOSED_TAG.sub("", REMEMBER_TAG.sub("", raw)).strip()   # never speak the tag
+    moves = head_moves(HEAD_TAG.findall(raw))
+    reply = UNCLOSED_TAG.sub("", HEAD_TAG.sub("", REMEMBER_TAG.sub("", raw))).strip()   # never speak the tags
+    if not moves and not args.no_head:
+        moves = head_moves_from_request(text)
+        if moves:
+            print("  (no [HEAD] tag from the model; using the moves from what you said)")
     saved = remember(facts)
 
+    # the history keeps the head tag, so the model sees itself using it (and keeps doing so)
+    remembered_reply = reply + (f"\n[HEAD: {', '.join(moves)}]" if moves else "")
     with history_lock:
         history.extend([{"role": "user", "content": text},
-                        {"role": "assistant", "content": reply}])
+                        {"role": "assistant", "content": remembered_reply}])
         del history[:-2 * args.history]   # keep the last N exchanges
     result = {"reply": reply, "seconds_llm": round(time.time() - t0, 2)}
+    if moves:
+        result["head"] = moves
+        print(f"  head   : {', '.join(moves)}")
     if saved:
         result["remembered"] = saved
         for fact in saved:
@@ -353,6 +443,7 @@ class Handler(BaseHTTPRequestHandler):
         # 200 with an empty body = nothing to say (e.g. Whisper heard nothing)
         self._send(200, float_to_pcm16(speech), "audio/L16; rate=16000; channels=1",
                    {"X-Happy-Text": q(result.get("text")), "X-Happy-Reply": q(reply),
+                    "X-Happy-Head": ",".join(result.get("head") or []),
                     "X-Happy-Ignored": "1" if result.get("ignored") else "0"})
 
     def _chat(self):
@@ -402,6 +493,7 @@ def main():
     p.add_argument("--memory", default=str(DEFAULT_MEMORY),
                    help="long-term memory file ('' to disable)")
     p.add_argument("--no-llm", action="store_true", help="speech-to-text only, skip LM Studio")
+    p.add_argument("--no-head", action="store_true", help="don't tell Happy it can turn its head")
     p.add_argument("--voice", default="af_heart",
                    help="Kokoro voice, e.g. af_heart, af_bella, am_michael, bm_george, am_puck")
     p.add_argument("--speed", type=float, default=1.0, help="speaking speed, e.g. 0.9 or 1.2")
