@@ -49,7 +49,7 @@ const int PIN_SD  = 1;
 const int PIN_TALK = 0;          // BOOT button, LOW when pressed (shared with servo 3, see below)
 
 const int SAMPLE_RATE = 16000;
-const int MAX_SECONDS = 20;
+const int MAX_SECONDS = 10;      // safety cap only: normally a recording ends at the first SILENCE_MS pause
 const int MIC_SLOT    = 0;       // L/R tied to GND -> left slot (0). If text is always empty and peak ~0, try 1.
 const int GAIN_SHIFT  = 14;      // 32-bit sample >> 16 = plain 16-bit; >> 14 adds ~12 dB (INMP441 is quiet)
 
@@ -66,7 +66,10 @@ const bool  SHOW_LEVELS   = false;  // print the mic level twice a second (for t
 const int   MIN_LEVEL     = 300;    // never start recording below this loudness...
 const float NOISE_FACTOR  = 3.0f;   // ...or below 3x the room's background noise
 const int   START_MS      = 80;     // this much loud sound in a row starts a recording
-const int   SILENCE_MS    = 800;    // this much quiet ends it
+const int   SILENCE_MS    = 800;    // this much quiet ends the recording, and it's sent to the PC right away
+const float SILENCE_DROP  = 0.15f;  // quiet also = below 15% of your speaking loudness (ignores steady hum)
+const int   VOICE_RESET_MS = 50;    // a sound must last this long to break a silence (clicks don't count)
+const bool  STILL_WHILE_LISTENING = true;  // freeze the neck while recording: servo noise can't hide the silence
 const int   PREROLL_MS    = 300;    // sound kept from just before the start, so the first word isn't cut
 const int   MIN_SPEECH_MS = 300;    // shorter sounds (a clap, a door) are ignored
 const int   FOLLOW_UP_MS  = 8000;   // after Happy answers, you can reply without saying "Happy" (0 = off)
@@ -411,6 +414,12 @@ void neckTask(void*) {
       last = f;
     }
 
+    // listening: hold the head exactly where it is, so the servos stay silent for the mic
+    if (STILL_WHILE_LISTENING && f == FACE_LISTEN && !cmdN) {
+      vTaskDelayUntil(&wake, pdMS_TO_TICKS(20));
+      continue;
+    }
+
     float pose[3] = {0, 0, 0};
     float k = 0.06f;                       // smoothing per stage: bigger = quicker moves
     float drift = 1.0f;                    // how much idle sway in this state
@@ -636,14 +645,36 @@ size_t listenForSpeech() {
   size_t oldest = (head + PREROLL - filled) % PREROLL;
   for (size_t i = 0; i < filled; i++) pcm[n++] = preroll[(oldest + i) % PREROLL];
 
+  // Silence = the (smoothed) level is below the end level, OR far below how loud you were
+  // speaking (so a steady hum above the end level can't keep the recording going).
+  // Only a sound lasting VOICE_RESET_MS breaks a silence, so single clicks don't restart it.
   const float endLevel = threshold * 0.7f;   // a bit lower, so quiet word endings still count
-  int quiet = 0, voiced = loud;
+  const int resetBlocks = max(1, VOICE_RESET_MS / BLOCK_MS);
+  int quiet = 0, voiced = loud, loudRun = 0;
+  float smooth = level, speechLevel = level;
   while (n < MAX_SAMPLES && quiet < silenceBlocks) {
     size_t got = readBlock(block, level);
     for (size_t i = 0; i < got && n < MAX_SAMPLES; i++) pcm[n++] = block[i];
-    if (level > endLevel) { quiet = 0; voiced++; }
-    else quiet++;
+    smooth += (level - smooth) * 0.5f;                           // ~30 ms smoothing
+    if (smooth > speechLevel) speechLevel = smooth;              // follow your voice up quickly...
+    else speechLevel += (smooth - speechLevel) * 0.005f;         // ...and down only very slowly
+    bool isQuiet = smooth < endLevel || smooth < speechLevel * SILENCE_DROP;
+    if (!isQuiet) {
+      voiced++;
+      if (++loudRun >= resetBlocks) quiet = 0;
+      else quiet++;                                              // too short (yet) to break the silence
+    } else {
+      loudRun = 0;
+      quiet++;
+    }
+    if (SHOW_LEVELS && millis() - lastShow > 500) {
+      Serial.printf("rec level %5.0f   end %5.0f   speech %5.0f   quiet %4d ms\n",
+                    smooth, max(endLevel, speechLevel * SILENCE_DROP), speechLevel, quiet * BLOCK_MS);
+      lastShow = millis();
+    }
   }
+  if (quiet >= silenceBlocks) Serial.printf("Silence after %.1f s - sending.\n", (millis() - speechStartAt) / 1000.0f);
+  else Serial.printf("Hit the %d s limit - sending.\n", MAX_SECONDS);
   if (voiced * BLOCK_MS < MIN_SPEECH_MS) {
     Serial.println("Just a noise, ignored.");
     face = FACE_IDLE;

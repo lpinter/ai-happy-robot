@@ -325,10 +325,13 @@ Microphone settings you can adjust in the sketch:
 |---------|---------|-------------------|
 | `MIC_SLOT` | `0` | Whisper always hears nothing and `peak` in the server window is near 0: try `1` |
 | `GAIN_SHIFT` | `14` | The recording is too quiet (`13`) or distorted (`15`) |
-| `MAX_SECONDS` | `10` | You want longer questions |
+| `MAX_SECONDS` | `10` | You want longer questions. It's only a safety limit: a recording normally ends at the first pause |
 | `HANDS_FREE` | `true` | You want the BOOT button only (`false`) |
 | `MIN_LEVEL` | `300` | Happy starts recording on background noise (raise it) or misses quiet speech (lower it). Set `SHOW_LEVELS = true` to see the levels in the Serial Monitor |
-| `SILENCE_MS` | `800` | Happy cuts you off mid-sentence (raise it) or waits too long after you stop (lower it) |
+| `SILENCE_MS` | `800` | Happy cuts you off mid-sentence (raise it) or waits too long after you stop (lower it). After this much quiet the recording goes to the PC straight away |
+| `SILENCE_DROP` | `0.15` | The recording runs to `MAX_SECONDS` although you stopped (raise it, e.g. `0.25`) or quiet word endings get cut (lower it). Quiet also counts as falling below this share of how loud you were speaking, so a steady hum can't keep the recording going |
+| `VOICE_RESET_MS` | `50` | Clicks or bumps keep the recording going (raise it) |
+| `STILL_WHILE_LISTENING` | `true` | `false` = the head keeps its curious tilt and sway while you talk (servo noise can then delay the end of the recording) |
 | `FOLLOW_UP_MS` | `8000` | Happy keeps answering things not meant for it (`0` = always need the name) |
 
 The name Happy answers to is set on the server: `py stt_server.py --wake-words happy,robot`
