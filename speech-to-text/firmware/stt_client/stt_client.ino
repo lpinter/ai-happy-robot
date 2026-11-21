@@ -191,10 +191,10 @@ void drawFace(Face f, bool blink, int mouth, int dots) {
       ellipse(88, 50, 16, blink ? 2 : 22, EYES);
       lips(96, 16, 4);
       break;
-    case FACE_THINK:                               // looking up and to the side, "..." below
+    case FACE_THINK:                               // looking up and to the side, small smile, "..." below
       ellipse(48, 44, 12, blink ? 2 : 14, EYES);
       ellipse(96, 44, 12, blink ? 2 : 14, EYES);
-      mouthCurve(90, 12, 0);
+      mouthCurve(92, 14, 5);
       for (int i = 0; i < dots; i++) ellipse(52 + i * 12, 112, 3, 3, SMILE);
       break;
     case FACE_SPEAK:                               // lips part with the sound
