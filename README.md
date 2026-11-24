@@ -80,8 +80,8 @@ The first column is the pin list of the ESP32 board. The second column has the p
 | VDD | 3V3 |
 | GND | GND |
 | L/R | GND |
-| SCK | GPIO 42 |
 | WS | GPIO 41 |
+| SCK | GPIO 42 |
 | SD | GPIO 1 |
 
 **Mouth: MAX98357A amp**
