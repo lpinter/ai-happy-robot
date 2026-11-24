@@ -331,7 +331,6 @@ Microphone settings you can adjust in the sketch:
 | `SILENCE_MS` | `800` | Happy cuts you off mid-sentence (raise it) or waits too long after you stop (lower it). After this much quiet the recording goes to the PC straight away |
 | `SILENCE_DROP` | `0.15` | The recording runs to `MAX_SECONDS` although you stopped (raise it, e.g. `0.25`) or quiet word endings get cut (lower it). Quiet also counts as falling below this share of how loud you were speaking, so a steady hum can't keep the recording going |
 | `VOICE_RESET_MS` | `50` | Clicks or bumps keep the recording going (raise it) |
-| `STILL_WHILE_LISTENING` | `true` | `false` = the head keeps its curious tilt and sway while you talk (servo noise can then delay the end of the recording) |
 | `FOLLOW_UP_MS` | `8000` | Happy keeps answering things not meant for it (`0` = always need the name) |
 
 The name Happy answers to is set on the server: `py stt_server.py --wake-words happy,robot`
