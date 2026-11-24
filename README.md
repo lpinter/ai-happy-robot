@@ -84,6 +84,23 @@ The first column is the pin list of the ESP32 board. The second column has the p
 | SCK | GPIO 42 |
 | SD | GPIO 1 |
 
+**Second ear (optional): another INMP441, for sound direction**
+
+With two mics Happy can tell whether a sound comes from its left or its right, and looks that way
+with its eyes. The second mic shares the clock and data wires with the first one; its L/R pin on
+3V3 makes it send in the other half of each I2S frame, so the two never talk over each other.
+Mount the first mic (L/R → GND) on Happy's **left** and this one on its **right**, seen from the
+robot, about 10–15 cm apart.
+
+| Mic pin | ESP32-S3 |
+|---|---|
+| VDD | 3V3 |
+| GND | GND |
+| L/R | **3V3** |
+| WS | GPIO 41 (same as the first mic) |
+| SCK | GPIO 42 (same as the first mic) |
+| SD | GPIO 1 (same as the first mic) |
+
 **Mouth: MAX98357A amp**
 | Amp pin | ESP32-S3 |
 |---|---|

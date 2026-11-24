@@ -19,6 +19,10 @@
 // the head only while Happy speaks (small nods with the speech) and for head moves the AI asks
 // for. The rest of the time (waiting, listening, thinking) the servos get no pulses at all, to
 // save battery and keep the mic quiet.
+// With a second INMP441 (L/R -> 3V3, sharing SCK/WS/SD with the first one) Happy hears where a
+// sound comes from and looks that way with its eyes: sound from its left -> eyes look left, from
+// its right -> eyes look right. Method from github.com/entron/esp32_sound_direction (MIT): the time
+// difference between the two mics, found by cross-correlation (see "sound direction" below).
 //
 // Board: ESP32S3 Dev Module, Flash 16MB, PSRAM "OPI PSRAM" (needed for the buffers).
 // Core:  esp32 by Espressif 3.x (uses ESP_I2S.h, same as mic_test and amp_test).
@@ -87,6 +91,7 @@ const size_t MAX_SAMPLES = (size_t)SAMPLE_RATE * MAX_SECONDS;
 const size_t MAX_REPLY_BYTES = (size_t)SAMPLE_RATE * 2 * MAX_REPLY_SECONDS;
 int16_t block[BLOCK];            // one mic read
 int16_t preroll[PREROLL];        // ring buffer: the last PREROLL_MS while waiting for speech
+int16_t otherMic[BLOCK];         // the same read from the second mic (the slot that isn't MIC_SLOT)
 float noise = 0;                 // background noise level, learned while it's quiet
 unsigned long lastAnswerAt = 0;  // when Happy last finished speaking (0 = never)
 unsigned long speechStartAt = 0; // when the current recording started
@@ -106,6 +111,99 @@ const uint16_t SMILE = 0xFD20;   // orange
 enum Face { FACE_SLEEP, FACE_IDLE, FACE_LISTEN, FACE_THINK, FACE_SPEAK, FACE_SAD };
 volatile Face face = FACE_SLEEP; // set by the main loop, drawn by faceTask
 volatile float mouthOpen = 0;    // 0..1, how loud Happy is speaking right now
+
+// ------------------------------------------------------------------ sound direction (2 mics)
+// Wiring: a second INMP441 next to the first one, on the same SCK (GPIO 42), WS (GPIO 41) and
+// SD (GPIO 1) wires, with VDD -> 3V3, GND -> GND and L/R -> 3V3 (the first mic has L/R -> GND).
+// Mount the L/R -> GND mic on the robot's LEFT side and the L/R -> 3V3 mic on its RIGHT side
+// (seen from the robot), MIC_DISTANCE_M apart, both facing forward.
+// A sound from the left reaches the left mic a little earlier (at most ~0.4 ms). Comparing the two
+// mics at every possible delay (cross-correlation) finds that delay, and the delay gives the angle.
+// It can't tell front from back, and it only looks left/right (2 mics = one axis).
+const bool  LOOK_AT_SOUND  = true;    // false = only one mic connected, the eyes stay in the middle
+const bool  LOOK_FLIP      = true;   // eyes look AWAY from the sound? set true (or swap the two mics)
+const bool  SHOW_DIRECTION = true;   // print every measured angle on the Serial Monitor (for tuning)
+constexpr float MIC_DISTANCE_M = 0.109f;   // distance between the two mic holes, in metres. Measure yours!
+constexpr float SOUND_SPEED    = 343.0f;  // m/s
+constexpr int   MAX_LAG  = (int)(MIC_DISTANCE_M * SAMPLE_RATE / SOUND_SPEED) + 1;  // delays checked, in samples
+const size_t DIR_WINDOW    = 1024;    // samples per measurement (64 ms)
+const float  MIN_CORR      = 0.5f;    // how alike the two mics must sound (0..1) to trust the angle
+const float  DEAD_ZONE_DEG = 15;      // sounds closer than this to straight ahead: look straight ahead
+const float  FULL_LOOK_DEG = 45;      // sounds this far to the side (or more): eyes all the way over
+const int    EYE_LOOK_PX   = 18;      // how far the eyes move to the side, in pixels
+const int    GAZE_HOLD_MS  = 4000;    // keep looking that way this long after the last sound
+
+volatile float gazeAngle = 0;          // + = sound from Happy's left, - = from its right (degrees)
+volatile unsigned long gazeUntil = 0;  // millis() until which the eyes look at gazeAngle
+int16_t dirL[DIR_WINDOW], dirR[DIR_WINDOW];   // loud sound collected from both mics
+size_t dirN = 0;
+
+// How alike the two mics are (-1..1) when the right mic is shifted `lag` samples later.
+float corrAtLag(const int16_t* l, const int16_t* r, int n, int lag) {
+  int offL = lag < 0 ? -lag : 0, offR = lag > 0 ? lag : 0;
+  int pairs = n - abs(lag);
+  if (pairs < 2) return 0;
+  float meanL = 0, meanR = 0;
+  for (int i = 0; i < pairs; i++) { meanL += l[offL + i]; meanR += r[offR + i]; }
+  meanL /= pairs; meanR /= pairs;
+  float cross = 0, eL = 0, eR = 0;
+  for (int i = 0; i < pairs; i++) {
+    float a = l[offL + i] - meanL, b = r[offR + i] - meanR;
+    cross += a * b; eL += a * a; eR += b * b;
+  }
+  float d = sqrtf(eL * eR);
+  return d > 1.0f ? cross / d : 0;
+}
+
+// Angle of the sound in degrees (+ = from the left mic's side), or NAN if the mics don't agree
+// well enough (echoes, two sounds at once, only one mic connected).
+float soundAngle(const int16_t* l, const int16_t* r, int n) {
+  float c[2 * MAX_LAG + 1];
+  float best = -2;
+  int bestLag = 0;
+  for (int lag = -MAX_LAG; lag <= MAX_LAG; lag++) {
+    c[lag + MAX_LAG] = corrAtLag(l, r, n, lag);
+    if (c[lag + MAX_LAG] > best) { best = c[lag + MAX_LAG]; bestLag = lag; }
+  }
+  if (best < MIN_CORR) return NAN;
+  float delay = bestLag;               // refine between two samples: fit a parabola through the peak
+  if (bestLag > -MAX_LAG && bestLag < MAX_LAG) {
+    float p = c[bestLag - 1 + MAX_LAG], q = c[bestLag + 1 + MAX_LAG];
+    float den = p - 2 * best + q;
+    if (fabsf(den) > 1e-6f) delay += constrain(0.5f * (p - q) / den, -1.0f, 1.0f);
+  }
+  float s = delay / SAMPLE_RATE * SOUND_SPEED / MIC_DISTANCE_M;   // = sin(angle)
+  return asinf(constrain(s, -1.0f, 1.0f)) * 57.29578f;
+}
+
+void measureDirection() {
+  float a = soundAngle(dirL, dirR, dirN);
+  if (SHOW_DIRECTION) {
+    if (isnan(a)) Serial.println("direction: unsure");
+    else Serial.printf("direction: %+5.1f deg (%s)\n", a, fabsf(a) < DEAD_ZONE_DEG ? "ahead" : a > 0 ? "left" : "right");
+  }
+  if (isnan(a)) return;
+  gazeAngle = fabsf(a) < DEAD_ZONE_DEG ? 0 : a;
+  gazeUntil = millis() + GAZE_HOLD_MS;
+}
+
+// Feed every mic block here. `mic` is the block from MIC_SLOT, otherMic holds the second mic.
+// Only loud blocks in a row are measured; a quiet block ends the measurement.
+void trackSound(const int16_t* mic, size_t got, bool loud) {
+  if (!LOOK_AT_SOUND) return;
+  if (!loud) {
+    if (dirN >= DIR_WINDOW / 2) measureDirection();   // a short sound (a clap) still counts
+    dirN = 0;
+    return;
+  }
+  const int16_t* left  = MIC_SLOT == 0 ? mic : otherMic;   // slot 0 = the L/R -> GND mic = left
+  const int16_t* right = MIC_SLOT == 0 ? otherMic : mic;
+  for (size_t i = 0; i < got && dirN < DIR_WINDOW; i++, dirN++) {
+    dirL[dirN] = left[i];
+    dirR[dirN] = right[i];
+  }
+  if (dirN >= DIR_WINDOW) { measureDirection(); dirN = 0; }
+}
 
 uint16_t fb[128 * 128];          // RGB565, stored big-endian for the panel
 
@@ -188,8 +286,9 @@ void lips(int cy, int halfWidth, int open) {
   }
 }
 
-// mouth = 0..18 (how open while speaking), dots = 0..3 (thinking animation)
-void drawFace(Face f, bool blink, int mouth, int dots) {
+// mouth = 0..18 (how open while speaking), dots = 0..3 (thinking animation),
+// look = how many pixels the eyes are moved sideways (toward a sound)
+void drawFace(Face f, bool blink, int mouth, int dots, int look) {
   memset(fb, 0, sizeof(fb));
   int eyeH = blink ? 2 : 18;
   switch (f) {
@@ -199,13 +298,13 @@ void drawFace(Face f, bool blink, int mouth, int dots) {
       mouthCurve(94, 12, 0);
       break;
     case FACE_IDLE:                                // the oled_face test face
-      ellipse(40, 52, 14, eyeH, EYES);
-      ellipse(88, 52, 14, eyeH, EYES);
+      ellipse(40 + look, 52, 14, eyeH, EYES);
+      ellipse(88 + look, 52, 14, eyeH, EYES);
       mouthCurve(92, 24, 14);
       break;
     case FACE_LISTEN:                              // big eyes, lips slightly parted
-      ellipse(40, 50, 16, blink ? 2 : 22, EYES);
-      ellipse(88, 50, 16, blink ? 2 : 22, EYES);
+      ellipse(40 + look, 50, 16, blink ? 2 : 22, EYES);
+      ellipse(88 + look, 50, 16, blink ? 2 : 22, EYES);
       lips(96, 16, 4);
       break;
     case FACE_THINK:                               // looking up and to the side, small smile, "..." below
@@ -215,13 +314,13 @@ void drawFace(Face f, bool blink, int mouth, int dots) {
       for (int i = 0; i < dots; i++) ellipse(52 + i * 12, 112, 3, 3, SMILE);
       break;
     case FACE_SPEAK:                               // lips part with the sound
-      ellipse(40, 52, 14, 18, EYES);
-      ellipse(88, 52, 14, 18, EYES);
+      ellipse(40 + look, 52, 14, 18, EYES);
+      ellipse(88 + look, 52, 14, 18, EYES);
       lips(94, 24, mouth);
       break;
     case FACE_SAD:                                 // something went wrong
-      ellipse(40, 56, 14, 10, EYES);
-      ellipse(88, 56, 14, 10, EYES);
+      ellipse(40 + look, 56, 14, 10, EYES);
+      ellipse(88 + look, 56, 14, 10, EYES);
       mouthCurve(92, 20, -10);
       break;
   }
@@ -241,6 +340,7 @@ void faceTask(void*) {
 
   unsigned long nextBlink = millis() + random(2000, 4500);
   int lastKey = -1;
+  float lookX = 0;                 // smoothed eye shift in pixels, so the eyes glide over
   while (true) {
     Face f = face;
     unsigned long now = millis();
@@ -251,9 +351,24 @@ void faceTask(void*) {
     }
     int mouth = f == FACE_SPEAK ? (int)(mouthOpen * 18) : 0;
     int dots = f == FACE_THINK ? (now / 300) % 4 : 0;
-    int key = f * 10000 + blink * 1000 + mouth * 10 + dots;
+
+    // Look toward the last sound. While Happy thinks and answers, it keeps looking at you
+    // (the mic isn't read then); GAZE_HOLD_MS after that, the eyes glide back to the middle.
+    bool gazing = LOOK_AT_SOUND && (long)(gazeUntil - now) > 0;
+    if (gazing && (f == FACE_THINK || f == FACE_SPEAK)) gazeUntil = now + GAZE_HOLD_MS;
+    float want = 0;
+    if (gazing) {
+      float a = gazeAngle;
+      want = constrain(a / FULL_LOOK_DEG, -1.0f, 1.0f) * EYE_LOOK_PX;
+      // Happy's left is the viewer's right, i.e. the right side (+x) of the display
+      if (LOOK_FLIP) want = -want;
+    }
+    lookX += (want - lookX) * 0.3f;
+    int look = (int)lroundf(lookX);
+
+    int key = ((f * 2 + blink) * 64 + look + 32) * 1000 + mouth * 10 + dots;
     if (key != lastKey) {
-      drawFace(f, blink, mouth, dots);
+      drawFace(f, blink, mouth, dots, look);
       lastKey = key;
     }
     vTaskDelay(pdMS_TO_TICKS(30));
@@ -565,10 +680,10 @@ size_t readBlock(int16_t* out, float& level) {
   size_t got = i2s.readBytes((char*)frame, sizeof(frame)) / sizeof(int32_t);
   size_t n = 0;
   int64_t sum = 0, sumSq = 0;
-  for (size_t i = MIC_SLOT; i < got; i += 2) {
-    int32_t s = frame[i] >> GAIN_SHIFT;
-    if (s > 32767) s = 32767;
-    if (s < -32768) s = -32768;
+  for (size_t i = 0; i + 1 < got; i += 2) {
+    int32_t s = constrain(frame[i + MIC_SLOT] >> GAIN_SHIFT, -32768, 32767);
+    int32_t o = constrain(frame[i + 1 - MIC_SLOT] >> GAIN_SHIFT, -32768, 32767);
+    otherMic[n] = (int16_t)o;      // second mic: only used for the sound direction
     out[n++] = (int16_t)s;
     sum += s;
     sumSq += (int64_t)s * s;
@@ -584,6 +699,7 @@ size_t readBlock(int16_t* out, float& level) {
 void flushMic(int ms) {
   float level;
   for (int t = 0; t < ms; t += BLOCK_MS) readBlock(block, level);
+  dirN = 0;                      // don't glue old sound to the next measurement
 }
 
 size_t recordWhileHeld() {
@@ -593,6 +709,7 @@ size_t recordWhileHeld() {
   flushMic(100);                 // let the mic settle
   while (talkPressed() && n < MAX_SAMPLES) {
     size_t got = readBlock(block, level);
+    trackSound(block, got, level > MIN_LEVEL);
     for (size_t i = 0; i < got && n < MAX_SAMPLES; i++) pcm[n++] = block[i];
   }
   return n;
@@ -619,6 +736,7 @@ size_t listenForSpeech() {
       if (filled < PREROLL) filled++;
     }
     threshold = max((float)MIN_LEVEL, noise * NOISE_FACTOR);
+    trackSound(block, got, level > threshold);   // any loud sound turns the eyes, not only "Happy"
     if (SHOW_LEVELS && millis() - lastShow > 500) {
       Serial.printf("level %5.0f   noise %5.0f   threshold %5.0f\n", level, noise, threshold);
       lastShow = millis();
@@ -653,6 +771,7 @@ size_t listenForSpeech() {
     if (smooth > speechLevel) speechLevel = smooth;              // follow your voice up quickly...
     else speechLevel += (smooth - speechLevel) * 0.005f;         // ...and down only very slowly
     bool isQuiet = smooth < endLevel || smooth < speechLevel * SILENCE_DROP;
+    trackSound(block, got, !isQuiet);           // keep following the speaker while recording
     if (!isQuiet) {
       voiced++;
       if (++loudRun >= resetBlocks) quiet = 0;

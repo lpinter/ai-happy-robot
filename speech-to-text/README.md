@@ -319,6 +319,37 @@ sketch shows Happy's face while you talk:
 The face runs in its own task, so it doesn't slow down listening or speaking. Without a display,
 set `SHOW_FACE = false` at the top of the face section.
 
+### Looking toward a sound
+
+With the second INMP441 wired as in the main [README](../README.md) (L/R to 3V3, on the same
+SCK/WS/SD wires as the first mic), Happy's eyes turn toward the sound: a sound from Happy's left
+makes it look left, a sound from its right makes it look right. The eyes stay that way while
+Happy thinks and answers, and glide back to the middle 4 seconds later.
+
+How it works (based on [esp32_sound_direction](https://github.com/entron/esp32_sound_direction)):
+a sound from the side reaches one mic a fraction of a millisecond before the other. The sketch
+compares the two mics at every possible delay, picks the delay where they match best, and turns
+that delay into an angle. Two mics only tell left from right; they can't tell front from back.
+
+To set it up, mount the **L/R to GND** mic on Happy's **left** and the **L/R to 3V3** mic on its
+**right** (seen from the robot), both facing forward, and measure the distance between the two
+mic holes. Then set `SHOW_DIRECTION = true`, snap your fingers or talk to one side, and watch the
+Serial Monitor: `direction: +40.0 deg (left)`.
+
+| Setting | Default | Change it when... |
+|---------|---------|-------------------|
+| `LOOK_AT_SOUND` | `true` | You have only one mic (`false`): the eyes stay in the middle |
+| `MIC_DISTANCE_M` | `0.14` | Always: set the distance between your two mic holes, in metres. 10–15 cm works well |
+| `LOOK_FLIP` | `false` | The eyes look away from the sound: set `true` (or swap the two mics) |
+| `MIN_CORR` | `0.5` | It always prints `unsure` (lower it, e.g. `0.3`) or the eyes jump around on noise (raise it) |
+| `DEAD_ZONE_DEG` | `15` | The eyes twitch when you sit straight in front of Happy (raise it) |
+| `EYE_LOOK_PX` | `18` | The eyes should move further or less far to the side |
+| `GAZE_HOLD_MS` | `4000` | Happy should look back to the middle sooner or later |
+
+If it always prints `unsure`, check that the second mic works: in `mic_test` the bar shows the
+louder mic, so talking right next to one mic and then the other should switch the label between
+`L` and `R`.
+
 Microphone settings you can adjust in the sketch:
 
 | Setting | Default | Change it when... |
