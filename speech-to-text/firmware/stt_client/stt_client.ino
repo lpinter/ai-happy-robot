@@ -463,13 +463,8 @@ void queueHeadMoves(const String& moves) {
   portEXIT_CRITICAL(&headMux);
 }
 
-void servoWrite(int pin, int deg) {
-  int us = map(deg, 0, 180, 500, 2500);
-  ledcWrite(pin, (uint32_t)us * 16384 / 20000);  // 14-bit duty, 20 ms period
-}
-
-// Same, but with fractions of a degree (1 duty step = ~1.2 us = ~0.1 degree), so slow moves glide
-// instead of stepping a whole degree at a time.
+// Sends the pulse for an angle, with fractions of a degree (1 duty step = ~1.2 us = ~0.1 degree),
+// so slow moves glide instead of stepping a whole degree at a time. 14-bit duty, 20 ms period.
 void servoWriteF(int pin, float deg) {
   float us = 500.0f + constrain(deg, 0.0f, 180.0f) * (2000.0f / 180.0f);
   ledcWrite(pin, (uint32_t)(us * 16384.0f / 20000.0f + 0.5f));
@@ -477,36 +472,32 @@ void servoWriteF(int pin, float deg) {
 
 // Moves every servo to its home angle, one at a time, so they don't all pull current at once
 // (that can brown out the board).
+// The PWM is attached once, here, and never detached: attaching a pin again later sets up the
+// shared PWM timer again, which glitches the pulses of the other servos and makes them all jump.
+// "No pulses" is duty 0 instead (the line just stays LOW).
 void servosToMiddle() {
   for (int i = 0; i < NUM_SERVOS; i++) {
     ledcAttach(PIN_SERVOS[i], 50, 14);
-    servoWrite(PIN_SERVOS[i], SERVO_HOME[i]);
+    servoWriteF(PIN_SERVOS[i], SERVO_HOME[i]);   // same float math as neckTask, so no step later
     delay(400);
   }
   delay(400);                    // let the last one arrive
   for (int i = 0; i < NUM_SERVOS; i++) {
     if (SERVO_HOLD[i]) continue;
-    ledcDetach(PIN_SERVOS[i]);   // no more pulses: the servo stops correcting (and buzzing)
-    pinMode(PIN_SERVOS[i], OUTPUT);
-    digitalWrite(PIN_SERVOS[i], LOW);  // keep the signal line quiet, not floating
+    ledcWrite(PIN_SERVOS[i], 0); // no more pulses: the servo stops correcting (and buzzing)
   }
   Serial.printf("Servos: home position %d / %d / %d degrees.\n", SERVO_HOME[0], SERVO_HOME[1], SERVO_HOME[2]);
 }
 
 // Switches the servo pulses on (at the given angles) or off. Off = the servo motor stops
 // driving, which saves battery and is silent; the gears' friction holds the head in place.
-// Servos with SERVO_HOLD keep their pulse.
+// Servos with SERVO_HOLD keep their pulse. Only the duty changes; the hardware applies it at
+// the start of the next 20 ms period, so the first pulse after "on" is always a whole one.
 void servosPower(bool on, const float* pos) {
   for (int i = 0; i < NUM_SERVOS; i++) {
     if (SERVO_HOLD[i]) continue;
-    if (on) {
-      ledcAttach(PIN_SERVOS[i], 50, 14);
-      servoWriteF(PIN_SERVOS[i], pos[i]);
-    } else {
-      ledcDetach(PIN_SERVOS[i]);
-      pinMode(PIN_SERVOS[i], OUTPUT);
-      digitalWrite(PIN_SERVOS[i], LOW);
-    }
+    if (on) servoWriteF(PIN_SERVOS[i], pos[i]);
+    else    ledcWrite(PIN_SERVOS[i], 0);
   }
 }
 
