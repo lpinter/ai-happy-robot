@@ -122,7 +122,7 @@ volatile float mouthOpen = 0;    // 0..1, how loud Happy is speaking right now
 // It can't tell front from back, and it only looks left/right (2 mics = one axis).
 const bool  LOOK_AT_SOUND  = true;    // false = only one mic connected, the eyes stay in the middle
 const bool  LOOK_FLIP      = true;   // eyes look AWAY from the sound? set true (or swap the two mics)
-const bool  SHOW_DIRECTION = true;   // print every measured angle on the Serial Monitor (for tuning)
+const bool  SHOW_DIRECTION = false;   // print every measured angle on the Serial Monitor (for tuning)
 constexpr float MIC_DISTANCE_M = 0.109f;   // distance between the two mic holes, in metres. Measure yours!
 constexpr float SOUND_SPEED    = 343.0f;  // m/s
 constexpr int   MAX_LAG  = (int)(MIC_DISTANCE_M * SAMPLE_RATE / SOUND_SPEED) + 1;  // delays checked, in samples
@@ -385,11 +385,16 @@ const bool USE_SERVOS = true;    // false = no servos connected, BOOT push-to-ta
 const int  PIN_SERVOS[] = {45, 46, 0};
 const int  NUM_SERVOS   = sizeof(PIN_SERVOS) / sizeof(PIN_SERVOS[0]);
 // Start-up ("home") angle of each servo, same order as PIN_SERVOS. 90 = middle.
-const int  SERVO_HOME[] = {105, 140, 80};
+const int  SERVO_HOME[] = {85, 100, 80};
 // true = keep sending the pulse so the servo actively holds its angle (it can buzz/jitter
 // under load); false = stop the pulse once it has arrived, so it goes quiet and is held
 // only by its gears' friction.
 const bool SERVO_HOLD[] = {false, false, false};
+// Hard end points (degrees) of each servo, same order as PIN_SERVOS. No move ever goes past
+// these, whatever NECK_RANGE or a head move asks for. Servo 2's up end (the max) stops short
+// of where the head hits the frame.
+const float SERVO_MIN[] = {0, 0, 0};
+const float SERVO_MAX[] = {180, 120, 180};
 // All directions are from the viewpoint of the robot
 // Servo 1 - right (0) to left (180) 
 // Servo 2 - down (0) and up (180)
@@ -408,7 +413,7 @@ const float MAX_SPEED    = 60.0f;    // degrees per second, never faster (gentle
 // your head"): the server sends them in X-Happy-Head, e.g. "left,up,tilt left,center", and neckTask
 // plays them on servo 1 (left/right), servo 2 (up/down) and servo 3 (tilt) while Happy speaks.
 const float HEAD_TURN = 25.0f;       // degrees for "left" / "right"           (stays within NECK_RANGE[0])
-const float HEAD_LIFT = 18.0f;       // degrees for "up" / "down"              (stays within NECK_RANGE[1])
+const float HEAD_LIFT = 18.0f;       // degrees for "up" / "down"              (stays within NECK_RANGE[1]; "up" also capped by SERVO_MAX[1])
 const float HEAD_TILT = 14.0f;       // degrees for "tilt left" / "tilt right" (stays within NECK_RANGE[2])
 struct HeadStep { float pan, nod, roll; uint16_t ms; float k; };   // where to look, for how long, how quickly
 const int MAX_HEAD_STEPS = 32;
@@ -589,6 +594,7 @@ void neckTask(void*) {
         ki = cmd[cmdI].k;
       }
       float goal = SERVO_HOME[i] + constrain(off, -NECK_RANGE[i], NECK_RANGE[i]);
+      goal = constrain(goal, SERVO_MIN[i], SERVO_MAX[i]);
       mid[i] += (goal - mid[i]) * ki;
       pos[i] += constrain((mid[i] - pos[i]) * ki * 1.5f, -maxStep, maxStep);
       servoWriteF(PIN_SERVOS[i], pos[i]);
