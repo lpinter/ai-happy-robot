@@ -23,6 +23,8 @@
 // sound comes from and looks that way with its eyes: sound from its left -> eyes look left, from
 // its right -> eyes look right. Method from github.com/entron/esp32_sound_direction (MIT): the time
 // difference between the two mics, found by cross-correlation (see "sound direction" below).
+// As soon as you stop talking (while Happy thinks), it also turns its head (servo 1) toward the voice
+// and stays facing that way after the answer (TURN_TO_SOUND).
 //
 // Board: ESP32S3 Dev Module, Flash 16MB, PSRAM "OPI PSRAM" (needed for the buffers).
 // Core:  esp32 by Espressif 3.x (uses ESP_I2S.h, same as mic_test and amp_test).
@@ -121,9 +123,9 @@ volatile float mouthOpen = 0;    // 0..1, how loud Happy is speaking right now
 // mics at every possible delay (cross-correlation) finds that delay, and the delay gives the angle.
 // It can't tell front from back, and it only looks left/right (2 mics = one axis).
 const bool  LOOK_AT_SOUND  = true;    // false = only one mic connected, the eyes stay in the middle
-const bool  LOOK_FLIP      = true;   // eyes look AWAY from the sound? set true (or swap the two mics)
+const bool  LOOK_FLIP      = false;  // head and eyes turn AWAY from the sound? flip this (or swap the two mics)
 const bool  SHOW_DIRECTION = false;   // print every measured angle on the Serial Monitor (for tuning)
-constexpr float MIC_DISTANCE_M = 0.109f;   // distance between the two mic holes, in metres. Measure yours!
+constexpr float MIC_DISTANCE_M = 0.106f;   // distance between the two mic holes, in metres. Measure yours!
 constexpr float SOUND_SPEED    = 343.0f;  // m/s
 constexpr int   MAX_LAG  = (int)(MIC_DISTANCE_M * SAMPLE_RATE / SOUND_SPEED) + 1;  // delays checked, in samples
 const size_t DIR_WINDOW    = 1024;    // samples per measurement (64 ms)
@@ -132,9 +134,17 @@ const float  DEAD_ZONE_DEG = 15;      // sounds closer than this to straight ahe
 const float  FULL_LOOK_DEG = 45;      // sounds this far to the side (or more): eyes all the way over
 const int    EYE_LOOK_PX   = 18;      // how far the eyes move to the side, in pixels
 const int    GAZE_HOLD_MS  = 4000;    // keep looking that way this long after the last sound
+// When you stop talking, the neck (servo 1) turns toward where the voice came from (while Happy
+// thinks) and stays turned that way after the answer, until someone talks from somewhere else.
+const bool   TURN_TO_SOUND = true;    // false = only the eyes look, the head stays where it is
+const bool   MICS_ON_HEAD  = false;   // true = the two mics turn with the head (mounted on the face)
 
-volatile float gazeAngle = 0;          // + = sound from Happy's left, - = from its right (degrees)
+// Angles are measured from Happy's home position (servo 1 at SERVO_HOME), so they stay right
+// even after the head has turned: + = Happy's left, - = its right (degrees).
+volatile float gazeAngle = 0;          // where the last sound came from
 volatile unsigned long gazeUntil = 0;  // millis() until which the eyes look at gazeAngle
+volatile float facePan = 0;            // where the head rests when it isn't busy (set when Happy answers)
+volatile float headPanNow = 0;         // where the head is turned right now (written by neckTask)
 int16_t dirL[DIR_WINDOW], dirR[DIR_WINDOW];   // loud sound collected from both mics
 size_t dirN = 0;
 
@@ -183,7 +193,9 @@ void measureDirection() {
     else Serial.printf("direction: %+5.1f deg (%s)\n", a, fabsf(a) < DEAD_ZONE_DEG ? "ahead" : a > 0 ? "left" : "right");
   }
   if (isnan(a)) return;
-  gazeAngle = fabsf(a) < DEAD_ZONE_DEG ? 0 : a;
+  if (LOOK_FLIP) a = -a;               // mics swapped: the measured side is the wrong way round
+  if (fabsf(a) < DEAD_ZONE_DEG) a = 0;
+  gazeAngle = a + (MICS_ON_HEAD ? headPanNow : 0);   // from the head's angle to the home angle
   gazeUntil = millis() + GAZE_HOLD_MS;
 }
 
@@ -358,10 +370,11 @@ void faceTask(void*) {
     if (gazing && (f == FACE_THINK || f == FACE_SPEAK)) gazeUntil = now + GAZE_HOLD_MS;
     float want = 0;
     if (gazing) {
-      float a = gazeAngle;
-      want = constrain(a / FULL_LOOK_DEG, -1.0f, 1.0f) * EYE_LOOK_PX;
+      // only the part the head hasn't turned yet: once the head faces the sound, eyes go to the middle
+      float a = gazeAngle - headPanNow;
+      if (fabsf(a) < DEAD_ZONE_DEG) a = 0;
       // Happy's left is the viewer's right, i.e. the right side (+x) of the display
-      if (LOOK_FLIP) want = -want;
+      want = constrain(a / FULL_LOOK_DEG, -1.0f, 1.0f) * EYE_LOOK_PX;
     }
     lookX += (want - lookX) * 0.3f;
     int look = (int)lroundf(lookX);
@@ -551,9 +564,15 @@ void neckTask(void*) {
     }
 
     bool speaking = f == FACE_SPEAK;
+    // the resting place: home, except servo 1 stays turned toward the last person Happy answered
+    float rest[3] = {facePan, 0, 0};
+    float restDeg[3];
+    for (int i = 0; i < NUM_SERVOS; i++)
+      restDeg[i] = constrain(SERVO_HOME[i] + constrain(rest[i], -NECK_RANGE[i], NECK_RANGE[i]), SERVO_MIN[i], SERVO_MAX[i]);
     bool atHome = true;
     for (int i = 0; i < NUM_SERVOS; i++)
-      if (fabsf(pos[i] - SERVO_HOME[i]) > 0.3f || fabsf(mid[i] - SERVO_HOME[i]) > 0.3f) atHome = false;
+      if (fabsf(pos[i] - restDeg[i]) > 0.3f || fabsf(mid[i] - restDeg[i]) > 0.3f) atHome = false;
+    headPanNow = pos[0] - SERVO_HOME[0];
 
     // nothing to do (or listening): pulses off, servos silent and drawing no power
     if (listening || (!speaking && !cmdN && atHome)) {
@@ -574,10 +593,10 @@ void neckTask(void*) {
       speech[0] = 3.0f * sinf(t * 0.9f);
       sway = 0.8f * SPEAK_SWAY;
     }
-    // otherwise: done talking, glide back home (offsets 0)
+    // otherwise: done talking, glide back to the resting place
 
     for (int i = 0; i < NUM_SERVOS; i++) {
-      float off = speech[i] + neckDrift(i, t) * sway;
+      float off = rest[i] + speech[i] + neckDrift(i, t) * sway;
       float ki = 0.06f;                    // smoothing per stage: bigger = quicker moves
       if (cmdN) {                          // servo 1 = turn, servo 2 = nod, servo 3 = tilt
         float want = i == 0 ? cmd[cmdI].pan : i == 1 ? cmd[cmdI].nod : cmd[cmdI].roll;
@@ -844,6 +863,14 @@ bool talkToHappy(size_t samples, bool needName) {
     face = FACE_IDLE;
     return false;
   }
+  // remember where the voice came from now: thinking can take longer than GAZE_HOLD_MS
+  // and start turning toward it right away, while Happy thinks (neckTask glides there)
+  bool heardSide = LOOK_AT_SOUND && (long)(gazeUntil - millis()) > 0;
+  float oldPan = facePan;          // to turn back if Happy doesn't answer after all
+  if (USE_SERVOS && ANIMATE_NECK && TURN_TO_SOUND && heardSide) {
+    facePan = constrain(gazeAngle, -NECK_RANGE[0], NECK_RANGE[0]);
+    Serial.printf("Turning to the voice: %+.0f deg\n", facePan);
+  }
   face = FACE_THINK;
   HTTPClient http;
   http.setTimeout(60000);        // Whisper + Gemma + Kokoro; the first request after a restart is slower
@@ -866,6 +893,7 @@ bool talkToHappy(size_t samples, bool needName) {
   if (http.header("X-Happy-Ignored") == "1") {
     Serial.println("(not talking to Happy - say \"Happy\" to wake it)");
     http.end();
+    facePan = oldPan;            // it wasn't for Happy: turn back to whoever it was facing
     face = FACE_IDLE;
     return false;
   }
