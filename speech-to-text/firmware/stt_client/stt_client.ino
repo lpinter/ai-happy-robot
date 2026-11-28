@@ -100,7 +100,7 @@ const float NOISY_END_MAX     = 0.5f;     // ...but never above half your own sp
 const int   NOISY_VOICE_RESET_MS = 150;   // noisy room: a sound must last this long to break a silence
 const int   NOISE_CLIP_MS = 500;    // this much pure room noise goes to the PC with each recording (0 = off)
 const int   START_MS      = 80;     // this much loud sound in a row starts a recording
-const int   SILENCE_MS    = 800;    // this much quiet ends the recording, and it's sent to the PC right away
+const int   SILENCE_MS    = 1500;    // this much quiet ends the recording, and it's sent to the PC right away
 const float SILENCE_DROP  = 0;      // > 0: quiet also = below this share of your speaking loudness
                                     // (e.g. 0.1, only for rooms that get louder while you speak)
 const int   VOICE_RESET_MS = 50;    // a sound must last this long to break a silence (clicks don't count)

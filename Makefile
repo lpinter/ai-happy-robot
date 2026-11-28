@@ -12,6 +12,9 @@ restart:
 check-server:
 	curl http://localhost:8000/health
 
-# Compile and upload the stt_client sketch to the robot (ESP32-S3)
+BAUD   ?= 115200
+
+# Compile and upload the stt_client sketch to the robot (ESP32-S3).
+# A serial monitor holding the port is stopped first and reopened after the upload.
 upload:
-	arduino-cli compile --fqbn $(FQBN) --upload --port $(PORT) $(SKETCH)
+	powershell -NoProfile -ExecutionPolicy Bypass -File tools/upload.ps1 -Port $(PORT) -Fqbn "$(FQBN)" -Sketch $(SKETCH) -Baud $(BAUD)
