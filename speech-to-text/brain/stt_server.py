@@ -29,6 +29,12 @@ Moves: left, right, up, down, tilt left, tilt right, center, shake, nod (directi
 Audio in (/talk and /stt):
   * Content-Type: application/octet-stream -> raw PCM, 16 kHz, 16-bit LE, mono (ESP32)
   * Content-Type: audio/wav                -> any 16-bit PCM WAV (testing with curl)
+  * request header X-Happy-Noise: N        -> the first N samples are room noise without speech
+                                              (the ESP32 records it while waiting for the wake word)
+
+Noise filter: before Whisper listens, spectral subtraction removes the room's steady noise using
+that noise clip (or, without one, the quietest moments of the recording). last_recording.wav is
+what the mic heard, last_recording_clean.wav what Whisper heard. Turn it off with --no-denoise.
 
 No ffmpeg needed. LM Studio's server must be running (`lms server start`).
 
@@ -201,6 +207,68 @@ def to_wav(audio: np.ndarray, rate: int) -> bytes:
     return buf.getvalue()
 
 
+# ---------------------------------------------------------------- noise filter
+
+FFT_SIZE = 512   # 32 ms frames at 16 kHz
+FFT_HOP = 128    # 75% overlap
+FFT_WINDOW = np.hanning(FFT_SIZE + 1)[:-1].astype(np.float32)
+DENOISE_FLOOR = 0.1   # -20 dB: the most the filter takes away (deeper cuts start to harm the words)
+
+
+def stft(audio: np.ndarray, pad: bool = True) -> np.ndarray:
+    """Frames x frequency bins. pad=True also covers the very start and end of the audio."""
+    if pad:
+        audio = np.pad(audio, (FFT_SIZE, FFT_SIZE + FFT_HOP))
+    if len(audio) < FFT_SIZE:
+        return np.zeros((0, FFT_SIZE // 2 + 1), dtype=np.complex64)
+    frames = np.lib.stride_tricks.sliding_window_view(audio, FFT_SIZE)[::FFT_HOP]
+    return np.fft.rfft(frames * FFT_WINDOW, axis=1)
+
+
+def istft(spec: np.ndarray, length: int) -> np.ndarray:
+    """Back from stft(pad=True) to `length` samples (overlap-add)."""
+    frames = np.fft.irfft(spec, n=FFT_SIZE, axis=1) * FFT_WINDOW
+    out = np.zeros(len(frames) * FFT_HOP + FFT_SIZE, dtype=np.float32)
+    norm = np.zeros_like(out)
+    for i, f in enumerate(frames):
+        out[i * FFT_HOP:i * FFT_HOP + FFT_SIZE] += f
+        norm[i * FFT_HOP:i * FFT_HOP + FFT_SIZE] += FFT_WINDOW ** 2
+    return (out / np.maximum(norm, 1e-6))[FFT_SIZE:FFT_SIZE + length]
+
+
+def smooth3(g: np.ndarray, axis: int) -> np.ndarray:
+    """Average each value with its two neighbours along `axis` (fewer "musical noise" chirps)."""
+    p = np.pad(g, [(1, 1) if a == axis else (0, 0) for a in range(g.ndim)], mode="edge")
+    s = [slice(None)] * g.ndim
+    parts = []
+    for k in range(3):
+        s[axis] = slice(k, k + g.shape[axis])
+        parts.append(p[tuple(s)])
+    return sum(parts) / 3
+
+
+def denoise(audio: np.ndarray, noise: np.ndarray = None) -> tuple:
+    """Spectral subtraction: removes the room's steady noise (fans, hum, hiss) from the speech.
+    noise = a clip of the room without speech (the ESP32 sends one, measured while it waited for
+    the wake word). Without one, the quietest moments of the recording itself are used.
+    Returns (cleaned audio, where the noise profile came from)."""
+    spec = stft(audio)
+    mag = np.abs(spec)
+    noise_spec = stft(noise, pad=False) if noise is not None else np.zeros((0, mag.shape[1]))
+    if len(noise_spec) >= 4:
+        noise_mag, source = np.abs(noise_spec).mean(axis=0), "room"
+    else:
+        energy = (mag ** 2).sum(axis=1)
+        quiet = energy <= np.percentile(energy, 15)
+        if quiet.sum() < 4:
+            return audio, "none"
+        noise_mag, source = mag[quiet].mean(axis=0), "self"
+    # how much of each bin to keep; never less than the floor, so speech never fully vanishes
+    gain = np.maximum(1.0 - args.denoise_strength * noise_mag / np.maximum(mag, 1e-9), DENOISE_FLOOR)
+    gain = smooth3(smooth3(gain, 0), 1)   # smooth over time and frequency
+    return istft(spec * gain, len(audio)).astype(np.float32), source
+
+
 # ---------------------------------------------------------------- speech-to-text (Whisper)
 
 def transcribe(audio: np.ndarray) -> dict:
@@ -371,14 +439,30 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "empty body"})
             return None
         ctype = (self.headers.get("Content-Type") or "").lower()
+        is_wav = "wav" in ctype or data[:4] == b"RIFF"
         try:
-            audio = wav_to_float(data) if ("wav" in ctype or data[:4] == b"RIFF") \
-                else pcm16_to_float(data)
+            audio = wav_to_float(data) if is_wav else pcm16_to_float(data)
         except Exception as e:
             self._send_json(400, {"error": f"bad audio: {e}"})
             return None
+        # X-Happy-Noise: N = the first N samples are room noise without speech (ESP32)
+        noise = None
+        try:
+            noise_n = int(self.headers.get("X-Happy-Noise") or 0)
+        except ValueError:
+            noise_n = 0
+        if not is_wav and 0 < noise_n < len(audio):
+            noise, audio = audio[:noise_n], audio[noise_n:]
         if args.save_dir:  # keep the last recording so you can listen to what the mic heard
             Path(args.save_dir, "last_recording.wav").write_bytes(to_wav(audio, SAMPLE_RATE))
+        if not args.no_denoise and len(audio):
+            t0 = time.time()
+            audio, source = denoise(audio, noise)
+            print(f"  denoise: noise profile from {source}"
+                  + (f" ({len(noise) / SAMPLE_RATE:.2f}s clip)" if source == "room" else "")
+                  + f", {time.time() - t0:.2f}s")
+            if args.save_dir:  # what Whisper actually hears
+                Path(args.save_dir, "last_recording_clean.wav").write_bytes(to_wav(audio, SAMPLE_RATE))
         return audio
 
     def _hear_and_answer(self, audio: np.ndarray, need_name: bool = False) -> dict:
@@ -498,6 +582,11 @@ def main():
                    help="Kokoro voice, e.g. af_heart, af_bella, am_michael, bm_george, am_puck")
     p.add_argument("--speed", type=float, default=1.0, help="speaking speed, e.g. 0.9 or 1.2")
     p.add_argument("--no-tts", action="store_true", help="don't load Kokoro (no /talk speech, no /say)")
+    p.add_argument("--no-denoise", action="store_true",
+                   help="send the recording to Whisper as it is, without the noise filter")
+    p.add_argument("--denoise-strength", type=float, default=1.5,
+                   help="how hard the noise filter works: 1 = remove the measured noise, "
+                        "higher = more (cleaner but can dull the words), e.g. 1.0-2.5")
     p.add_argument("--wake-words", default="happy",
                    help="comma-separated names Happy answers to in hands-free mode ('' = answer everything)")
     args = p.parse_args()

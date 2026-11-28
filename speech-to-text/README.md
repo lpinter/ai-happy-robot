@@ -356,11 +356,22 @@ Microphone settings you can adjust in the sketch:
 |---------|---------|-------------------|
 | `MIC_SLOT` | `0` | Whisper always hears nothing and `peak` in the server window is near 0: try `1` |
 | `GAIN_SHIFT` | `14` | The recording is too quiet (`13`) or distorted (`15`) |
-| `MAX_SECONDS` | `10` | You want longer questions. It's only a safety limit: a recording normally ends at the first pause |
+| `MAX_SECONDS_QUIET` | `20` | The longest recording in a quiet room. You want longer questions (raise it). It's only a safety limit: a recording normally ends at the first pause |
+| `MAX_SECONDS_NOISY` | `10` | The longest recording in a noisy room, where the noise could keep a recording going |
+| `QUIET_ROOM_NOISE` | `100` | The room counts as quiet while its base noise is below this. Set `SHOW_LEVELS = true` and read `noise` in a room you call quiet and one you call noisy, then pick a value between them. Each recording prints `quiet room, up to 20 s` or `noisy room, up to 10 s` |
 | `HANDS_FREE` | `true` | You want the BOOT button only (`false`) |
 | `MIN_LEVEL` | `300` | Happy starts recording on background noise (raise it) or misses quiet speech (lower it). Set `SHOW_LEVELS = true` to see the levels in the Serial Monitor |
 | `SILENCE_MS` | `800` | Happy cuts you off mid-sentence (raise it) or waits too long after you stop (lower it). After this much quiet the recording goes to the PC straight away |
-| `SILENCE_DROP` | `0.15` | The recording runs to `MAX_SECONDS` although you stopped (raise it, e.g. `0.25`) or quiet word endings get cut (lower it). Quiet also counts as falling below this share of how loud you were speaking, so a steady hum can't keep the recording going |
+| `END_FACTOR` | `2.0` | While waiting for "Happy", the sketch measures the room's base noise. A recording ends when your voice sinks back to this many times that level. Raise it (e.g. `3.0`) if the recording runs to its time limit although you stopped; lower it (e.g. `1.5`) if quiet word endings get cut |
+| `END_MIN_LEVEL` | `200` | The recording ends below this loudness even if 2× the base noise is lower (quiet rooms). Raise it (e.g. `250`) if quiet-room recordings still run to `MAX_SECONDS_QUIET`; lower it (e.g. `120`) if quiet word endings get cut. Keep it below `MIN_LEVEL` |
+| `NOISY_END_FACTOR` | `1.2` | Noisy rooms only. While waiting, the sketch also measures how loud the noise's own loud moments get (the level that `NOISE_PEAK_PERCENTILE`, `0.9`, of the waiting time was quieter than). The recording ends when you sink below this many times that level, but never above half your own loudness (`NOISY_END_MAX`, `0.5`). Raise it (e.g. `1.5`) if noisy-room recordings still run to `MAX_SECONDS_NOISY`; lower it (e.g. `1.0`) if you get cut off there |
+| `NOISY_VOICE_RESET_MS` | `150` | Noisy rooms only: the `VOICE_RESET_MS` used there. Short bursts of noise no longer count as you talking again. Raise it (e.g. `250`) if noise still keeps the recording going |
+| `FOLLOW_SPEAKER_NOISY` | `true` | Needs both mics. In a noisy room, the direction you said "Happy" from is yours; afterwards only talking from within `SPEAKER_TOLERANCE_DEG` (`20`) of it keeps the recording going, so other people talking elsewhere don't. `false` = go by loudness only. `FOLLOW_SPEAKER_QUIET` does the same in quiet rooms (off by default) |
+| `SPEAKER_TOLERANCE_DEG` | `20` | You get cut off while still talking (raise it, e.g. `30`; also check `MIC_DISTANCE_M`) or someone close to your side still keeps the recording going (lower it, e.g. `12`) |
+| `UNSURE_IS_SPEAKER` | `false` | Sound with no clear direction (far-away chatter, echoes) doesn't count as you. Set `true` if you get cut off in a room with strong echoes |
+| `NOISE_WINDOW_MS` | `3000` | How long a stretch of waiting the base noise is measured over. The noise level is the one that `NOISE_PERCENTILE` (`0.3`) of that time was quieter than |
+| `NOISE_CLIP_MS` | `500` | How much pure room noise goes to the PC with every recording, for its noise filter (`0` = none; the PC then uses the quietest moments of the recording) |
+| `SILENCE_DROP` | `0` | Off by default. Set it to e.g. `0.1` if the room gets louder while you speak (a fan switches on) and the recording runs on: quiet then also counts as falling below this share of how loud you were speaking |
 | `VOICE_RESET_MS` | `50` | Clicks or bumps keep the recording going (raise it) |
 | `FOLLOW_UP_MS` | `8000` | Happy keeps answering things not meant for it (`0` = always need the name) |
 
@@ -369,6 +380,13 @@ The name Happy answers to is set on the server: `py stt_server.py --wake-words h
 
 To hear exactly what the microphone picked up, play `last_recording.wav`. It's in the `brain`
 folder when you start the server by hand, and in `brain\logs` when it runs from autostart.
+
+**Noise filter.** Before Whisper listens, the server removes the room's steady noise (fans, hum,
+hiss) with the noise clip the ESP32 recorded while waiting for "Happy". `last_recording_clean.wav`,
+next to `last_recording.wav`, is what Whisper actually heard, and the log shows
+`denoise: noise profile from room`. If the words sound dull or watery in the clean file, lower
+`--denoise-strength` (default `1.5`, e.g. `1.0`); if noise is still there, raise it (e.g. `2.5`).
+`--no-denoise` turns the filter off.
 
 ### What Happy remembers
 

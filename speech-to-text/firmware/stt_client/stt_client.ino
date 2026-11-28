@@ -16,15 +16,23 @@
 // so drawing never interrupts the microphone or the speaker.
 // The three micro servos (same pins and PWM code as firmware/tests/servo_test, servo_test2,
 // servo_test3) go to their home position at start-up. Then a neck task (also on core 0) moves
-// the head only while Happy speaks (small nods with the speech) and for head moves the AI asks
-// for. The rest of the time (waiting, listening, thinking) the servos get no pulses at all, to
-// save battery and keep the mic quiet.
+// the head only while Happy thinks (turning toward the voice) or speaks (small nods with the
+// speech and the head moves the AI asks for). The rest of the time (waiting, listening) the
+// servos get no pulses at all, to save battery and keep the mic quiet.
 // With a second INMP441 (L/R -> 3V3, sharing SCK/WS/SD with the first one) Happy hears where a
 // sound comes from and looks that way with its eyes: sound from its left -> eyes look left, from
 // its right -> eyes look right. Method from github.com/entron/esp32_sound_direction (MIT): the time
 // difference between the two mics, found by cross-correlation (see "sound direction" below).
 // As soon as you stop talking (while Happy thinks), it also turns its head (servo 1) toward the voice
 // and stays facing that way after the answer (TURN_TO_SOUND).
+//
+// Noise handling: while waiting for "Happy", the ESP32 keeps measuring the room's base noise
+// (the typical level of the quiet moments, see learnNoise). A recording starts above
+// NOISE_FACTOR x that level and ends when your voice sinks back down to END_FACTOR x that level.
+// It also keeps NOISE_CLIP_MS of pure room noise and sends it in front of every recording
+// (header X-Happy-Noise); the PC uses it to filter that noise out before Whisper listens.
+// In a noisy room the two mics also tell who is talking: only sound from the direction of the
+// person who said "Happy" keeps the recording going, so other people talking don't (FOLLOW_SPEAKER_*).
 //
 // Board: ESP32S3 Dev Module, Flash 16MB, PSRAM "OPI PSRAM" (needed for the buffers).
 // Core:  esp32 by Espressif 3.x (uses ESP_I2S.h, same as mic_test and amp_test).
@@ -34,6 +42,7 @@
 #include <ESP_I2S.h>
 #include <SPI.h>
 #include <esp_system.h>
+#include <algorithm>
 
 // Wi-Fi name/password and server URL live in secrets.h (gitignored).
 // First time: copy secrets.example.h to secrets.h and fill in your values.
@@ -56,7 +65,13 @@ const int PIN_SD  = 1;
 const int PIN_TALK = 0;          // BOOT button, LOW when pressed (shared with servo 3, see below)
 
 const int SAMPLE_RATE = 16000;
-const int MAX_SECONDS = 10;      // safety cap only: normally a recording ends at the first SILENCE_MS pause
+// Safety caps only: normally a recording ends at the first SILENCE_MS pause. In a quiet room the
+// end of your speech is easy to hear, so longer questions are allowed; in a noisy room the noise
+// could keep a recording going, so it's cut off sooner.
+const int MAX_SECONDS_QUIET = 20;   // longest recording when the room is quiet
+const int MAX_SECONDS_NOISY = 10;   // longest recording when the room is noisy
+const int QUIET_ROOM_NOISE  = 100;  // quiet room = base noise below this (SHOW_LEVELS prints it as "noise")
+const int MAX_SECONDS = max(MAX_SECONDS_QUIET, MAX_SECONDS_NOISY);   // the buffer holds the longer one
 const int MIC_SLOT    = 0;       // L/R tied to GND -> left slot (0). If text is always empty and peak ~0, try 1.
 const int GAIN_SHIFT  = 14;      // 32-bit sample >> 16 = plain 16-bit; >> 14 adds ~12 dB (INMP441 is quiet)
 
@@ -69,12 +84,25 @@ const int MAX_REPLY_SECONDS = 30;
 
 // Hands-free listening. Set SHOW_LEVELS = true to see the mic level and pick MIN_LEVEL.
 const bool  HANDS_FREE    = true;   // false = BOOT button only, like before
-const bool  SHOW_LEVELS   = false;  // print the mic level twice a second (for tuning)
+const bool  SHOW_LEVELS   = true;  // print the mic level twice a second (for tuning)
 const int   MIN_LEVEL     = 300;    // never start recording below this loudness...
-const float NOISE_FACTOR  = 3.0f;   // ...or below 3x the room's background noise
+const float NOISE_FACTOR  = 3.0f;   // ...or below 3x the room's base noise
+const int   NOISE_WINDOW_MS = 3000; // the base noise is measured over the last 3 s of waiting...
+const float NOISE_PERCENTILE = 0.3f; // ...as the level that 30% of that time was quieter than
+const float END_FACTOR    = 2.0f;   // the recording ends when your voice sinks to 2x the base noise...
+const int   END_MIN_LEVEL = 200;    // ...or below this loudness, whichever is higher (quiet rooms)
+// Noisy rooms (base noise >= QUIET_ROOM_NOISE): the noise goes up and down (talk, TV, music), and its
+// loud moments would keep a recording going. So there the recording also ends when you sink below
+// the noise's loud moments, and a sound must last longer to count as you talking again.
+const float NOISE_PEAK_PERCENTILE = 0.9f; // the noise's loud moments: 90% of the waiting was quieter
+const float NOISY_END_FACTOR  = 1.2f;     // noisy room: ends below 1.2x those loud moments...
+const float NOISY_END_MAX     = 0.5f;     // ...but never above half your own speaking loudness
+const int   NOISY_VOICE_RESET_MS = 150;   // noisy room: a sound must last this long to break a silence
+const int   NOISE_CLIP_MS = 500;    // this much pure room noise goes to the PC with each recording (0 = off)
 const int   START_MS      = 80;     // this much loud sound in a row starts a recording
 const int   SILENCE_MS    = 800;    // this much quiet ends the recording, and it's sent to the PC right away
-const float SILENCE_DROP  = 0.15f;  // quiet also = below 15% of your speaking loudness (ignores steady hum)
+const float SILENCE_DROP  = 0;      // > 0: quiet also = below this share of your speaking loudness
+                                    // (e.g. 0.1, only for rooms that get louder while you speak)
 const int   VOICE_RESET_MS = 50;    // a sound must last this long to break a silence (clicks don't count)
 const int   PREROLL_MS    = 300;    // sound kept from just before the start, so the first word isn't cut
 const int   MIN_SPEECH_MS = 300;    // shorter sounds (a clap, a door) are ignored
@@ -84,17 +112,24 @@ const int   ECHO_FLUSH_MS = 300;    // after Happy speaks, throw away this much 
 const size_t BLOCK    = 256;                          // mono samples per mic read
 const int    BLOCK_MS = BLOCK * 1000 / SAMPLE_RATE;   // = 16 ms
 const size_t PREROLL  = (size_t)SAMPLE_RATE * PREROLL_MS / 1000;
+const size_t NOISE_CLIP = (size_t)SAMPLE_RATE * NOISE_CLIP_MS / 1000;
+const int    NOISE_BLOCKS = NOISE_WINDOW_MS / BLOCK_MS;
 
 I2SClass i2s;                    // microphone
 I2SClass amp;                    // speaker
-int16_t* pcm = nullptr;          // recording buffer in PSRAM
+int16_t* pcm = nullptr;          // recording buffer in PSRAM, with room for the noise clip in front
 uint8_t* reply = nullptr;        // Happy's answer (16 kHz, 16-bit mono) in PSRAM
 const size_t MAX_SAMPLES = (size_t)SAMPLE_RATE * MAX_SECONDS;
 const size_t MAX_REPLY_BYTES = (size_t)SAMPLE_RATE * 2 * MAX_REPLY_SECONDS;
 int16_t block[BLOCK];            // one mic read
 int16_t preroll[PREROLL];        // ring buffer: the last PREROLL_MS while waiting for speech
 int16_t otherMic[BLOCK];         // the same read from the second mic (the slot that isn't MIC_SLOT)
-float noise = 0;                 // background noise level, learned while it's quiet
+float noise = MIN_LEVEL / NOISE_FACTOR;   // the room's base noise level (a guess until measured)
+float noisePeak = noise;         // how loud the noise's own loud moments get (NOISE_PEAK_PERCENTILE)
+float noiseLevels[NOISE_BLOCKS]; // the levels of the last NOISE_WINDOW_MS of waiting (ring buffer)
+int noiseLevelHead = 0, noiseLevelCount = 0;
+int16_t noiseClip[NOISE_CLIP + 1];   // ring buffer: the latest pure room noise (no speech)
+size_t noiseClipHead = 0, noiseClipFilled = 0;
 unsigned long lastAnswerAt = 0;  // when Happy last finished speaking (0 = never)
 unsigned long speechStartAt = 0; // when the current recording started
 
@@ -147,6 +182,18 @@ volatile float facePan = 0;            // where the head rests when it isn't bus
 volatile float headPanNow = 0;         // where the head is turned right now (written by neckTask)
 int16_t dirL[DIR_WINDOW], dirR[DIR_WINDOW];   // loud sound collected from both mics
 size_t dirN = 0;
+int dirCount = 0;                      // how many directions have been measured so far
+float dirLast = NAN;                   // the latest one, in degrees from home (NAN = unsure)
+unsigned long dirAt = 0;               // when it was measured
+
+// Following the speaker: while recording in a noisy room, only talking from the direction of the
+// person who said "Happy" keeps the recording going. Other people talking elsewhere in the room
+// count as silence, so the recording ends when YOU stop. Needs the second mic (LOOK_AT_SOUND).
+const bool  FOLLOW_SPEAKER_NOISY = true;   // in noisy rooms (base noise >= QUIET_ROOM_NOISE)
+const bool  FOLLOW_SPEAKER_QUIET = false;  // in quiet rooms too (usually not needed there)
+const float SPEAKER_TOLERANCE_DEG = 30;    // sound within this angle of the speaker = the speaker
+const bool  UNSURE_IS_SPEAKER = false;     // a sound with no clear direction (far-away chatter,
+                                           // echoes) counts as: true = the speaker, false = others
 
 // How alike the two mics are (-1..1) when the right mic is shifted `lag` samples later.
 float corrAtLag(const int16_t* l, const int16_t* r, int n, int lag) {
@@ -192,8 +239,12 @@ void measureDirection() {
     if (isnan(a)) Serial.println("direction: unsure");
     else Serial.printf("direction: %+5.1f deg (%s)\n", a, fabsf(a) < DEAD_ZONE_DEG ? "ahead" : a > 0 ? "left" : "right");
   }
+  dirCount++;
+  dirAt = millis();
+  dirLast = NAN;
   if (isnan(a)) return;
   if (LOOK_FLIP) a = -a;               // mics swapped: the measured side is the wrong way round
+  dirLast = a + (MICS_ON_HEAD ? headPanNow : 0);     // for listenForSpeech: who is talking?
   if (fabsf(a) < DEAD_ZONE_DEG) a = 0;
   gazeAngle = a + (MICS_ON_HEAD ? headPanNow : 0);   // from the head's angle to the home angle
   gazeUntil = millis() + GAZE_HOLD_MS;
@@ -413,9 +464,8 @@ const float SERVO_MAX[] = {180, 120, 180};
 // Servo 2 - down (0) and up (180)
 // Servo 3 - bank left (0) to right (180)
 
-// Neck animation (see neckTask). The head moves only while Happy speaks and for head moves the
-// AI asks for; afterwards it glides home and the pulses stop (unless SERVO_HOLD). It never moves
-// while listening.
+// Neck animation (see neckTask). The head moves only while Happy thinks or speaks; any other
+// time (waiting, listening) it stops where it is and the pulses stop (unless SERVO_HOLD).
 const bool  ANIMATE_NECK = true;     // false = the servos go home at start-up and stay there
 const float NECK_RANGE[] = {30, 20, 15};  // how far (degrees) each servo may move away from home, either way
 const float SPEAK_SWAY   = 1.0f;     // gentle sway while speaking: 0 = none, 1 = normal, 2 = twice as much
@@ -524,10 +574,10 @@ float neckDrift(int axis, float t) {
   }
 }
 
-// Runs on core 0 at 50 Hz. The head moves only while Happy speaks (nods with the speech and a
-// gentle sway) or plays head moves the AI asked for. After that it glides back home and the
-// pulses stop, so the servos draw no power while waiting. While listening it never moves: any
-// leftover head moves are dropped and the pulses stop right where the head is.
+// Runs on core 0 at 50 Hz. The head moves only while Happy thinks (turns toward the voice /
+// glides to its resting place) or speaks (nods with the speech, a gentle sway, and the head
+// moves the AI asked for). Any other time (waiting, listening) it never moves: leftover head
+// moves are dropped and the pulses stop right where the head is, so the servos stay silent.
 // The position follows the goal through two smoothing stages, so every move starts and stops
 // gently (an S-curve) instead of jumping. Offsets below: turn + = left, nod + = up, tilt + = right.
 void neckTask(void*) {
@@ -556,8 +606,10 @@ void neckTask(void*) {
       cmdI = -1;
       cmdEnd = 0;
     }
-    bool listening = f == FACE_LISTEN;
-    if (listening) cmdN = 0;               // never move while listening
+    // the head moves only while Happy thinks or speaks; any other time (waiting, listening, sad)
+    // it stays still with the pulses off, so the servo noise never gets into the microphones
+    bool still = f != FACE_THINK && f != FACE_SPEAK;
+    if (still) cmdN = 0;                   // drop leftover head moves
     if (cmdN && now >= cmdEnd) {
       if (++cmdI < cmdN) cmdEnd = now + cmd[cmdI].ms;
       else cmdN = 0;                       // done
@@ -574,8 +626,8 @@ void neckTask(void*) {
       if (fabsf(pos[i] - restDeg[i]) > 0.3f || fabsf(mid[i] - restDeg[i]) > 0.3f) atHome = false;
     headPanNow = pos[0] - SERVO_HOME[0];
 
-    // nothing to do (or listening): pulses off, servos silent and drawing no power
-    if (listening || (!speaking && !cmdN && atHome)) {
+    // not thinking/speaking, or nothing to do: pulses off, servos silent and drawing no power
+    if (still || (!speaking && !cmdN && atHome)) {
       if (powered) { servosPower(false, pos); powered = false; }
       talk = talkSlow = 0;
       vTaskDelayUntil(&wake, pdMS_TO_TICKS(20));
@@ -711,6 +763,40 @@ size_t readBlock(int16_t* out, float& level) {
   return n;
 }
 
+// Measures the room's base noise from the mic level while Happy waits: the level that
+// NOISE_PERCENTILE of the last NOISE_WINDOW_MS was quieter than. A word, a clap or a door now and
+// then hardly moves it, while a fan or music that keeps going becomes the new base level.
+void learnNoise(float level) {
+  noiseLevels[noiseLevelHead] = level;
+  noiseLevelHead = (noiseLevelHead + 1) % NOISE_BLOCKS;
+  if (noiseLevelCount < NOISE_BLOCKS) noiseLevelCount++;
+  if (noiseLevelCount < 10) return;    // too little yet: keep the guess
+  static float sorted[NOISE_BLOCKS];
+  memcpy(sorted, noiseLevels, noiseLevelCount * sizeof(float));
+  int k = (int)(noiseLevelCount * NOISE_PERCENTILE);
+  std::nth_element(sorted, sorted + k, sorted + noiseLevelCount);
+  noise = max(sorted[k], 1.0f);
+  k = min((int)(noiseLevelCount * NOISE_PEAK_PERCENTILE), noiseLevelCount - 1);
+  std::nth_element(sorted, sorted + k, sorted + noiseLevelCount);
+  noisePeak = max(sorted[k], noise);
+}
+
+// The recording limit for the room as measured right now, in seconds.
+int maxSecondsNow() {
+  return noise < QUIET_ROOM_NOISE ? MAX_SECONDS_QUIET : MAX_SECONDS_NOISY;
+}
+
+// Keeps the latest NOISE_CLIP samples of pure room noise (blocks no louder than the end level),
+// for the PC's noise filter.
+void keepNoise(const int16_t* in, size_t got, float level) {
+  if (NOISE_CLIP == 0 || level > noise * END_FACTOR) return;
+  for (size_t i = 0; i < got; i++) {
+    noiseClip[noiseClipHead] = in[i];
+    noiseClipHead = (noiseClipHead + 1) % NOISE_CLIP;
+    if (noiseClipFilled < NOISE_CLIP) noiseClipFilled++;
+  }
+}
+
 // Throw away `ms` of mic input (stale audio and Happy's own echo).
 void flushMic(int ms) {
   float level;
@@ -723,10 +809,11 @@ size_t recordWhileHeld() {
   float level;
   face = FACE_LISTEN;
   flushMic(100);                 // let the mic settle
-  while (talkPressed() && n < MAX_SAMPLES) {
+  const size_t limit = (size_t)SAMPLE_RATE * maxSecondsNow();
+  while (talkPressed() && n < limit) {
     size_t got = readBlock(block, level);
     trackSound(block, got, level > MIN_LEVEL);
-    for (size_t i = 0; i < got && n < MAX_SAMPLES; i++) pcm[n++] = block[i];
+    for (size_t i = 0; i < got && n < limit; i++) pcm[n++] = block[i];
   }
   return n;
 }
@@ -740,9 +827,8 @@ size_t listenForSpeech() {
   int loud = 0;
   float level, threshold = MIN_LEVEL;
   unsigned long lastShow = 0;
-  if (noise == 0) noise = MIN_LEVEL / NOISE_FACTOR;
 
-  // 1. wait for a few loud blocks in a row
+  // 1. wait for a few loud blocks in a row, measuring the room's base noise all the while
   while (true) {
     if (talkPressed()) return 0;
     size_t got = readBlock(block, level);
@@ -751,17 +837,19 @@ size_t listenForSpeech() {
       head = (head + 1) % PREROLL;
       if (filled < PREROLL) filled++;
     }
+    learnNoise(level);
+    keepNoise(block, got, level);
     threshold = max((float)MIN_LEVEL, noise * NOISE_FACTOR);
     trackSound(block, got, level > threshold);   // any loud sound turns the eyes, not only "Happy"
     if (SHOW_LEVELS && millis() - lastShow > 500) {
-      Serial.printf("level %5.0f   noise %5.0f   threshold %5.0f\n", level, noise, threshold);
+      Serial.printf("level %5.0f   noise %5.0f   loud moments %5.0f   threshold %5.0f\n",
+                    level, noise, noisePeak, threshold);
       lastShow = millis();
     }
     if (level > threshold) {
       if (++loud >= startBlocks) break;
     } else {
       loud = 0;
-      noise += (level - noise) * (level < noise ? 0.05f : 0.002f);  // follow quiet fast, noise slowly
     }
   }
 
@@ -773,37 +861,95 @@ size_t listenForSpeech() {
   size_t oldest = (head + PREROLL - filled) % PREROLL;
   for (size_t i = 0; i < filled; i++) pcm[n++] = preroll[(oldest + i) % PREROLL];
 
-  // Silence = the (smoothed) level is below the end level, OR far below how loud you were
-  // speaking (so a steady hum above the end level can't keep the recording going).
+  // Silence = the (smoothed) level has sunk back to the room's base noise (END_FACTOR x the noise
+  // measured while waiting), or, if SILENCE_DROP is set, far below how loud you were speaking.
+  // In a noisy room also: below the noise's own loud moments (see NOISY_END_FACTOR).
   // Only a sound lasting VOICE_RESET_MS breaks a silence, so single clicks don't restart it.
-  const float endLevel = threshold * 0.7f;   // a bit lower, so quiet word endings still count
-  const int resetBlocks = max(1, VOICE_RESET_MS / BLOCK_MS);
+  const bool noisyRoom = noise >= QUIET_ROOM_NOISE;   // decided once, from the noise measured while waiting
+  // never wait for quieter than END_MIN_LEVEL: in a very quiet room, breathing or a keyboard
+  // would otherwise keep the recording going
+  const float baseEnd = max(noise * END_FACTOR, (float)END_MIN_LEVEL);
+  const int maxSeconds = maxSecondsNow();
+  const size_t limit = (size_t)SAMPLE_RATE * maxSeconds;
+  if (noisyRoom)
+    Serial.printf("Base noise %.0f, loud moments %.0f (noisy room, up to %d s): started above %.0f, ends below %.0f\n",
+                  noise, noisePeak, maxSeconds, threshold, max(baseEnd, noisePeak * NOISY_END_FACTOR));
+  else
+    Serial.printf("Base noise %.0f (quiet room, up to %d s): started above %.0f, ends below %.0f\n",
+                  noise, maxSeconds, threshold, baseEnd);
+  const int resetBlocks = max(1, (noisyRoom ? NOISY_VOICE_RESET_MS : VOICE_RESET_MS) / BLOCK_MS);
+
+  // Following the speaker (FOLLOW_SPEAKER_*): the direction measured while "Happy" was said is
+  // the speaker's. Each loud stretch after that is checked against it (one measurement every
+  // 64 ms of sound), and talking from anywhere else counts as silence.
+  const bool follow = LOOK_AT_SOUND && (noisyRoom ? FOLLOW_SPEAKER_NOISY : FOLLOW_SPEAKER_QUIET);
+  enum { WHO_PENDING, WHO_SPEAKER, WHO_OTHER, WHO_UNSURE } who = WHO_PENDING;
+  bool speakerKnown = follow && !isnan(dirLast) && millis() - dirAt < (unsigned long)START_MS + 200;
+  float speakerAngle = speakerKnown ? dirLast : 0;
+  int seenDir = dirCount;
+  if (speakerKnown) Serial.printf("Speaker at %+.0f deg: only their voice keeps the recording going.\n", speakerAngle);
+
   int quiet = 0, voiced = loud, loudRun = 0;
-  float smooth = level, speechLevel = level;
-  while (n < MAX_SAMPLES && quiet < silenceBlocks) {
+  float smooth = level, speechLevel = level, endLevel = baseEnd;
+  while (n < limit && quiet < silenceBlocks) {
     size_t got = readBlock(block, level);
-    for (size_t i = 0; i < got && n < MAX_SAMPLES; i++) pcm[n++] = block[i];
+    for (size_t i = 0; i < got && n < limit; i++) pcm[n++] = block[i];
     smooth += (level - smooth) * 0.5f;                           // ~30 ms smoothing
     if (smooth > speechLevel) speechLevel = smooth;              // follow your voice up quickly...
     else speechLevel += (smooth - speechLevel) * 0.005f;         // ...and down only very slowly
-    bool isQuiet = smooth < endLevel || smooth < speechLevel * SILENCE_DROP;
-    trackSound(block, got, !isQuiet);           // keep following the speaker while recording
+    if (noisyRoom)   // below the noise's loud moments = you stopped; but never cut off your own voice
+      endLevel = max(baseEnd, min(noisePeak * NOISY_END_FACTOR, speechLevel * NOISY_END_MAX));
+    bool isQuiet = smooth < endLevel || (SILENCE_DROP > 0 && smooth < speechLevel * SILENCE_DROP);
+    if (!isQuiet && loudRun == 0) who = WHO_PENDING;             // a new loud stretch: whose is it?
+    trackSound(block, got, !isQuiet);           // measures the direction of every loud stretch
+
+    if (follow && dirCount != seenDir) {        // a new direction was just measured
+      seenDir = dirCount;
+      if (isnan(dirLast)) {
+        who = WHO_UNSURE;
+      } else if (!speakerKnown) {               // first clear direction = the speaker
+        speakerKnown = true;
+        speakerAngle = dirLast;
+        who = WHO_SPEAKER;
+        Serial.printf("Speaker at %+.0f deg: only their voice keeps the recording going.\n", speakerAngle);
+      } else if (fabsf(dirLast - speakerAngle) <= SPEAKER_TOLERANCE_DEG) {
+        who = WHO_SPEAKER;
+        speakerAngle += (dirLast - speakerAngle) * 0.2f;         // follow them if they move a little
+      } else {
+        if (who != WHO_OTHER && (SHOW_LEVELS || SHOW_DIRECTION))
+          Serial.printf("Someone else talking at %+.0f deg - doesn't count.\n", dirLast);
+        who = WHO_OTHER;
+      }
+      if (speakerKnown && who != WHO_SPEAKER) {  // the eyes stay on the speaker
+        gazeAngle = fabsf(speakerAngle) < DEAD_ZONE_DEG ? 0 : speakerAngle;
+      }
+    }
+    // not knowing the speaker's direction (yet), or not measured yet: go by the level alone
+    bool fromSpeaker = !follow || !speakerKnown || who == WHO_PENDING || who == WHO_SPEAKER ||
+                       (who == WHO_UNSURE && UNSURE_IS_SPEAKER);
+
     if (!isQuiet) {
       voiced++;
-      if (++loudRun >= resetBlocks) quiet = 0;
-      else quiet++;                                              // too short (yet) to break the silence
+      if (++loudRun >= resetBlocks && fromSpeaker) quiet = 0;
+      else quiet++;                     // too short (yet) to break the silence, or someone else
     } else {
       loudRun = 0;
       quiet++;
     }
     if (SHOW_LEVELS && millis() - lastShow > 500) {
-      Serial.printf("rec level %5.0f   end %5.0f   speech %5.0f   quiet %4d ms\n",
-                    smooth, max(endLevel, speechLevel * SILENCE_DROP), speechLevel, quiet * BLOCK_MS);
+      const char* whoName[] = {"?", "speaker", "other", "unsure"};
+      Serial.printf("rec level %5.0f   end %5.0f   speech %5.0f   quiet %4d ms   %s\n",
+                    smooth, max(endLevel, speechLevel * SILENCE_DROP), speechLevel, quiet * BLOCK_MS,
+                    follow ? whoName[who] : "");
       lastShow = millis();
     }
   }
+  if (speakerKnown) {                   // Happy turns toward the speaker, not the last voice it heard
+    gazeAngle = fabsf(speakerAngle) < DEAD_ZONE_DEG ? 0 : speakerAngle;
+    gazeUntil = millis() + GAZE_HOLD_MS;
+  }
   if (quiet >= silenceBlocks) Serial.printf("Silence after %.1f s - sending.\n", (millis() - speechStartAt) / 1000.0f);
-  else Serial.printf("Hit the %d s limit - sending.\n", MAX_SECONDS);
+  else Serial.printf("Hit the %d s limit - sending.\n", maxSeconds);
   if (voiced * BLOCK_MS < MIN_SPEECH_MS) {
     Serial.println("Just a noise, ignored.");
     face = FACE_IDLE;
@@ -877,10 +1023,16 @@ bool talkToHappy(size_t samples, bool needName) {
   http.begin(serverUrl());
   http.addHeader("Content-Type", "application/octet-stream");
   http.addHeader("X-Happy-Wake", needName ? "1" : "0");
+  // the room noise goes just in front of the recording (pcm has room for it there)
+  size_t noiseN = noiseClipFilled;
+  int16_t* body = pcm - noiseN;
+  for (size_t i = 0; i < noiseN; i++)    // oldest first
+    body[i] = noiseClip[(noiseClipHead + NOISE_CLIP - noiseN + i) % NOISE_CLIP];
+  http.addHeader("X-Happy-Noise", String(noiseN));   // samples of room noise before the speech
   const char* keys[] = {"X-Happy-Text", "X-Happy-Reply", "X-Happy-Ignored", "X-Happy-Head"};
   http.collectHeaders(keys, 4);
 
-  int code = http.POST((uint8_t*)pcm, samples * sizeof(int16_t));
+  int code = http.POST((uint8_t*)body, (noiseN + samples) * sizeof(int16_t));
   if (code != 200) {
     Serial.printf("HTTP error %d: %s\n", code, http.errorToString(code).c_str());
     http.end();
@@ -932,7 +1084,8 @@ void setup() {
   if (USE_SERVOS && ANIMATE_NECK) xTaskCreatePinnedToCore(neckTask, "neck", 4096, nullptr, 2, nullptr, 0);
   if (SHOW_FACE) xTaskCreatePinnedToCore(faceTask, "face", 4096, nullptr, 1, nullptr, 0);
 
-  pcm = (int16_t*)ps_malloc(MAX_SAMPLES * sizeof(int16_t));
+  pcm = (int16_t*)ps_malloc((NOISE_CLIP + MAX_SAMPLES) * sizeof(int16_t));
+  if (pcm) pcm += NOISE_CLIP;    // the noise clip is copied in front of the recording when sending
   reply = (uint8_t*)ps_malloc(MAX_REPLY_BYTES);
   if (!pcm || !reply) { Serial.println("No PSRAM! Set Tools > PSRAM > OPI PSRAM."); while (true) delay(1000); }
 

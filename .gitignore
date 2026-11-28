@@ -1,7 +1,9 @@
 logs/
 __pycache__/
 .venv/
-secrets.h
+secrets*.h
+!secrets.example.h
 photo*.jpg
-last_recording.wav
+last_recording*.wav
 memory.md
+build/
